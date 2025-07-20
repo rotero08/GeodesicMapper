@@ -1,4 +1,4 @@
-/* style.css */
+/* src/style.css */
 
 * {
   box-sizing: border-box;
@@ -17,6 +17,7 @@ body {
   background-color: #000;
   color: white;
   display: flex;
+  flex-direction: column;
   justify-content: center;
   align-items: center;
 }
@@ -24,13 +25,18 @@ body {
 #app-container {
   width: 100%;
   height: 100%;
+  flex: 1;
   display: flex;
   flex-direction: column;
-  position: relative; /* Keep this for absolute positioning of controls */
+  position: relative;
 }
 
 #globe-canvas-wrapper {
-  flex: 1; /* Makes wrapper fill available vertical space */
+  flex: 1;
+  flex-shrink: 1;
+  /* NEW: Add min-width and min-height to allow shrinking below content size */
+  min-width: 0;
+  min-height: 0;
   display: flex;
   justify-content: center;
   align-items: center;
@@ -43,15 +49,10 @@ body {
 }
 
 #globe-canvas {
-  /* Removed flex: 1 here to allow JS to directly control width/height attributes reliably */
-  /* object-fit: contain is still useful if the canvas element itself is larger than its drawing buffer */
-  object-fit: contain;
-  display: block; /* Ensures no extra space below the canvas if it's inline */
-  /* Added these for initial flexibility before JS sets attributes */
-  max-width: 100%; 
+  display: block;
+  max-width: 100%;
   max-height: 100%;
 }
-
 
 #controls {
   position: absolute;
@@ -88,7 +89,6 @@ body {
   cursor: not-allowed;
 }
 
-/* These classes are not used in the JS directly, but are good for semantic CSS */
 .graticule {
   fill: none;
   stroke: rgba(255, 255, 255, 0.2);
