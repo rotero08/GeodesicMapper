@@ -1,0 +1,85 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  background-color: #000;
+  color: white;
+  overflow: hidden;
+}
+
+#app-container {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+#globe-canvas-wrapper {
+  flex: 1;
+  position: relative;
+  background-color: #000;
+  cursor: grab;
+}
+
+#globe-canvas-wrapper:active {
+  cursor: grabbing;
+}
+
+#globe-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background-color: #000;
+}
+
+#controls {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+}
+
+#projection-toggle {
+  background: rgba(0, 128, 128, 0.9);
+  border: 2px solid #008080;
+  color: white;
+  padding: 12px 24px;
+  font-size: 16px;
+  font-weight: bold;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  backdrop-filter: blur(10px);
+}
+
+#projection-toggle:hover:not(:disabled) {
+  background: rgba(0, 128, 128, 1);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 128, 128, 0.4);
+}
+
+#projection-toggle:active {
+  transform: translateY(0);
+}
+
+#projection-toggle:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.graticule {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.2);
+  stroke-width: 0.5px;
+}
+
+.great-circle {
+  fill: none;
+  stroke: #ff4444;
+  stroke-width: 2px;
+}
