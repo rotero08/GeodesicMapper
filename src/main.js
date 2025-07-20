@@ -24,43 +24,21 @@ const canvasWrapper = document.getElementById('globe-canvas-wrapper');
 if (!canvas || !toggleButton || !canvasWrapper) {
     console.error("Required DOM elements (canvas, toggle button, or canvas wrapper) not found!");
 } else {
-    // --- Dynamic Dimension Calculation ---
-    // Calculate dimensions from the *wrapper* to ensure content fits within its bounds
-    let width = canvasWrapper.clientWidth;
-    let height = canvasWrapper.clientHeight;
-
-    // Maintain a 2:1 aspect ratio for the canvas itself to best suit Mercator.
-    // This ensures Mercator map doesn't get squashed or stretched incorrectly by canvas dimensions.
-    const idealMercatorAspectRatio = 2; // Width / Height
-    if (width / height > idealMercatorAspectRatio) {
-        // Wrapper is wider than 2:1, constrain by height
-        width = height * idealMercatorAspectRatio;
-    } else {
-        // Wrapper is taller/narrower than 2:1, constrain by width
-        height = width / idealMercatorAspectRatio;
-    }
-
-    // Set canvas attributes based on calculated dimensions
-    canvas.width = width;
-    canvas.height = height;
     const context = canvas.getContext('2d');
 
     // Define interpolation for rotation and scale
-    // Orthographic parameters
+    // Orthographic parameters (initial estimates, will be adjusted by resize handler)
     const orthographicRotate = [10, -20, 0];
-    const orthographicScale = Math.min(width, height) / 2.5; // Scale to fit the smaller dimension for ortho globe
+    let orthographicScale; // Determined by initial/resize setup
 
     // Mercator parameters - we'll use fitSize, but define a placeholder
     const mercatorRotate = [0, 0, 0];
     let mercatorScale; // Will be determined by fitSize
-    let mercatorTranslate = [width / 2, height / 2]; // Initial guess, fitSize will adjust
+    let mercatorTranslate; // Initial guess, fitSize will adjust
 
     // Create the interpolated projection
     const projection = interpolateProjection(d3.geoOrthographicRaw, d3.geoMercatorRaw)
-        .scale(orthographicScale)
-        .translate([width / 2, height / 2])
-        .rotate(orthographicRotate)
-        .precision(0.1);
+        .precision(0.1); // Precision generally remains constant
 
     const path = d3.geoPath(projection, context);
 
@@ -81,16 +59,57 @@ if (!canvas || !toggleButton || !canvasWrapper) {
 
     // Function to calculate Mercator projection parameters dynamically
     function calculateMercatorParams() {
+        // We use the canvas's current width and height for fitSize
         const tempMercatorProjection = d3.geoMercator()
-            .precision(0.1); // Use a temporary Mercator projection to calculate fit
-
-        // Fit the countries (or sphere) to the available canvas dimensions.
-        // Using `sphere` ensures the entire theoretical Mercator map area is considered.
-        tempMercatorProjection.fitSize([width, height], sphere); // Fit the entire world sphere
-
+            .precision(0.1); 
+        
+        // Fit the entire sphere (world) to the canvas dimensions
+        tempMercatorProjection.fitSize([canvas.width, canvas.height], sphere); 
+        
         mercatorScale = tempMercatorProjection.scale();
         mercatorTranslate = tempMercatorProjection.translate();
     }
+
+    /**
+     * Updates canvas dimensions and projection parameters based on new wrapper size.
+     * This function now also calculates the initial dimensions.
+     */
+    function updateDimensionsAndProjections() {
+        let currentWrapperWidth = canvasWrapper.clientWidth;
+        let currentWrapperHeight = canvasWrapper.clientHeight;
+
+        let newCanvasWidth = currentWrapperWidth;
+        let newCanvasHeight = currentWrapperHeight;
+
+        const idealMercatorAspectRatio = 2; // Width / Height
+
+        // Apply aspect ratio constraint to the *desired* canvas dimensions
+        if (newCanvasWidth / newCanvasHeight > idealMercatorAspectRatio) {
+            newCanvasWidth = newCanvasHeight * idealMercatorAspectRatio;
+        } else {
+            newCanvasHeight = newCanvasWidth / idealMercatorAspectRatio;
+        }
+
+        // Only update if actual canvas dimensions will change
+        if (canvas.width !== newCanvasWidth || canvas.height !== newCanvasHeight) {
+            canvas.width = newCanvasWidth;
+            canvas.height = newCanvasHeight;
+
+            // Recalculate orthographic scale based on new canvas size
+            orthographicScale = Math.min(newCanvasWidth, newCanvasHeight) / 2.5; 
+
+            // Recalculate Mercator parameters for the new canvas size
+            calculateMercatorParams();
+
+            // Apply current projection state's parameters immediately after resize
+            projection.scale(currentProjectionState === 0 ? orthographicScale : mercatorScale);
+            projection.translate(currentProjectionState === 0 ? [newCanvasWidth / 2, newCanvasHeight / 2] : mercatorTranslate);
+            
+            // Re-render the current state to adjust for resize
+            renderFrame(currentProjectionState);
+        }
+    }
+
 
     /**
      * Renders a single frame of the globe.
@@ -101,26 +120,27 @@ if (!canvas || !toggleButton || !canvasWrapper) {
         // Interpolate rotation, scale, and translate
         const interpolatedRotate = d3.interpolate(orthographicRotate, mercatorRotate)(interpolatedT);
         const interpolatedScale = d3.interpolate(orthographicScale, mercatorScale)(interpolatedT);
-        const interpolatedTranslate = d3.interpolate([width / 2, height / 2], mercatorTranslate)(interpolatedT); // Interpolate translation too
+        const interpolatedTranslate = d3.interpolate([canvas.width / 2, canvas.height / 2], mercatorTranslate)(interpolatedT); 
 
         // Apply projection parameters
         projection
             .alpha(interpolatedT)
             .rotate(interpolatedRotate)
             .scale(interpolatedScale)
-            .translate(interpolatedTranslate); // Apply interpolated translation
+            .translate(interpolatedTranslate); 
 
         // Clear canvas
-        context.clearRect(0, 0, width, height);
+        context.clearRect(0, 0, canvas.width, canvas.height);
 
         // --- DRAW ORDER: Countries (fill all), then Sphere/Lines (with clipping) ---
 
         // 1. Draw and fill countries. Set clipAngle based on interpolatedT.
-        if (interpolatedT <= 0.5) { // Orthographic part of transition
-            const countryClipAngle = 90 + (interpolatedT * 2) * 90;
+        // Clipping for countries makes them "unfold" from the sphere
+        if (interpolatedT <= 0.5) { 
+            const countryClipAngle = 90 + (interpolatedT * 2) * 90; // Grows from 90 to 180 degrees
             projection.clipAngle(countryClipAngle);
-        } else { // Mercator part of transition
-            projection.clipAngle(null); // No clipping for Mercator countries
+        } else { 
+            projection.clipAngle(null); // No clipping for Mercator countries (full map)
         }
 
         if (countries) {
@@ -134,12 +154,16 @@ if (!canvas || !toggleButton || !canvasWrapper) {
         }
 
         // --- Now apply the specific clipping for lines and sphere outline ---
+        // Lines and sphere should only be visible within the *current* projection view
         let lineClipAngle;
         if (interpolatedT <= 0.5) {
-            lineClipAngle = 90 + (interpolatedT * 2) * 90;
+            lineClipAngle = 90; // Only show lines/sphere within the visible hemisphere for Orthographic
         } else {
-            lineClipAngle = 180; // No clipping for the entire map (Mercator)
+            lineClipAngle = 180; // Show lines/sphere across the entire map for Mercator
         }
+        // Important: Resetting clipAngle AFTER countries are drawn is crucial if different clipping is desired.
+        // For lines, we generally want only the visible part of the sphere.
+        // When transforming to Mercator, the clip angle effectively becomes 180 (no clipping)
         projection.clipAngle(lineClipAngle);
 
 
@@ -203,7 +227,7 @@ if (!canvas || !toggleButton || !canvasWrapper) {
                 isAnimating = false;
                 toggleButton.disabled = false;
                 currentProjectionState = targetState;
-                renderFrame(targetState);
+                renderFrame(targetState); // Ensure final state is rendered precisely
             }
         }
         animationId = requestAnimationFrame(loop);
@@ -222,16 +246,13 @@ if (!canvas || !toggleButton || !canvasWrapper) {
         }
     }
 
-    // --- NEW: Load world data and then initialize the globe ---
+    // Load world data and then initialize the globe
     d3.json("https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json").then(world => {
         countries = topojson.feature(world, world.objects.countries);
         console.log("Countries data loaded:", countries);
 
-        // Calculate Mercator parameters AFTER countries data is loaded
-        calculateMercatorParams();
-
-        // Initial render after data is loaded
-        renderFrame(currentProjectionState);
+        // Initial setup of dimensions and projections
+        updateDimensionsAndProjections();
 
         // Event listener for the toggle button (moved here to ensure data is ready)
         toggleButton.addEventListener('click', transformProjection);
@@ -240,34 +261,6 @@ if (!canvas || !toggleButton || !canvasWrapper) {
         console.error("Error loading the world atlas data:", error);
     });
 
-    // --- Refined Resize Handler ---
-    window.addEventListener('resize', () => {
-        // Recalculate dimensions based on wrapper
-        let newWidth = canvasWrapper.clientWidth;
-        let newHeight = canvasWrapper.clientHeight;
-
-        // Apply Mercator aspect ratio constraint to new dimensions
-        const idealMercatorAspectRatio = 2;
-        if (newWidth / newHeight > idealMercatorAspectRatio) {
-            newWidth = newHeight * idealMercatorAspectRatio;
-        } else {
-            newHeight = newWidth / idealMercatorAspectRatio;
-        }
-
-        if (canvas.width !== newWidth || canvas.height !== newHeight) {
-            canvas.width = newWidth;
-            canvas.height = newHeight;
-
-            // Recalculate Mercator params for new size
-            calculateMercatorParams();
-
-            // Update projection translation and scale based on current state and new dimensions
-            const newOrthographicScale = Math.min(newWidth, newHeight) / 2.5;
-            projection.scale(currentProjectionState === 0 ? newOrthographicScale : mercatorScale);
-            projection.translate(currentProjectionState === 0 ? [newWidth / 2, newHeight / 2] : mercatorTranslate);
-
-            // Re-render the current state to adjust for resize
-            renderFrame(currentProjectionState);
-        }
-    });
+    // Refined Resize Handler
+    window.addEventListener('resize', updateDimensionsAndProjections);
 }

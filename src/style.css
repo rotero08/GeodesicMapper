@@ -30,7 +30,7 @@ body {
 }
 
 #globe-canvas-wrapper {
-  flex: 1;
+  flex: 1; /* Makes wrapper fill available vertical space */
   display: flex;
   justify-content: center;
   align-items: center;
@@ -43,20 +43,21 @@ body {
 }
 
 #globe-canvas {
-  display: block;
-  background-color: #000;
-  max-width: 100%;
-  max-height: 100%;
+  /* Removed flex: 1 here to allow JS to directly control width/height attributes reliably */
+  /* object-fit: contain is still useful if the canvas element itself is larger than its drawing buffer */
   object-fit: contain;
+  display: block; /* Ensures no extra space below the canvas if it's inline */
+  /* Added these for initial flexibility before JS sets attributes */
+  max-width: 100%; 
+  max-height: 100%;
 }
 
+
 #controls {
-  /* CHANGED: Positioning to top-left corner */
   position: absolute;
-  top: 20px;   /* Distance from the top edge */
-  left: 20px;  /* Distance from the left edge */
-  transform: none; /* REMOVE translateX(-50%) as it's no longer needed for centering */
-  z-index: 10; /* Ensures it stays on top of the canvas */
+  top: 20px;
+  left: 20px;
+  z-index: 10;
 }
 
 #projection-toggle {
@@ -87,6 +88,7 @@ body {
   cursor: not-allowed;
 }
 
+/* These classes are not used in the JS directly, but are good for semantic CSS */
 .graticule {
   fill: none;
   stroke: rgba(255, 255, 255, 0.2);
