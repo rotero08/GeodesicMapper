@@ -468,39 +468,45 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
         const x = event.clientX - rect.left;
         const y = event.clientY - rect.top;
         
-        // Check if we're outside the visible area while dragging
-        if (isDragging && !isPointInVisibleArea(x, y)) {
-            isDragging = false;
-            dragStart = null;
-            lastDragTime = null;
-            globeCanvas.node().style.cursor = 'default';
-            return;
-        }
-        
-        if (isDragging && dragStart) {
+        if (isDragging) {
+            // If mouse goes out of bounds, stop dragging and start inertia
+            if (!isPointInVisibleArea(x, y)) {
+                isDragging = false;
+                dragStart = null;
+                if (currentProjectionState === PROJECTION_STATE.ORTHOGRAPHIC && (Math.abs(rotationVelocity[0]) > MIN_VELOCITY || Math.abs(rotationVelocity[1]) > MIN_VELOCITY)) {
+                    if (inertiaAnimationId === null) {
+                        applyInertia();
+                    }
+                }
+                globeCanvas.node().style.cursor = 'default';
+                return;
+            }
+
             const currentTime = performance.now();
             
             if (currentProjectionState === PROJECTION_STATE.ORTHOGRAPHIC) {
                 const dx = event.clientX - dragStart[0];
                 const dy = event.clientY - dragStart[1];
-                // Get the spherical coordinates for current and previous positions
-                const currentPos = screenToSphere(x, y);
-                const startPos = screenToSphere(dragStart[0], dragStart[1]);
-                
-                if (currentPos && startPos) {
-                    // Calculate the rotation needed to move from start to current position
-                    const deltaLon = currentPos[0] - startPos[0];
-                    const deltaLat = currentPos[1] - startPos[1];
-                    
-                    // Update rotation (positive deltaLon for natural horizontal movement)
-                    currentRotation[0] += deltaLon;
-                    currentRotation[1] -= deltaLat;
 
-                    // Calculate velocity based on time delta
-                    if (lastDragTime) {
-                        const dt = currentTime - lastDragTime;
-                        rotationVelocity[0] = deltaLon / dt * 16;
-                        rotationVelocity[1] = -deltaLat / dt * 16;
+                const sensitivity = 0.25; // Keep sensitivity constant
+                const rotation = globeProjection.rotate();
+                const k = sensitivity / (globeProjection.scale() / orthographicScale);
+
+                const newRotation = [
+                    rotation[0] + dx * k,
+                    rotation[1] - dy * k,
+                    rotation[2]
+                ];
+                
+                currentRotation = newRotation;
+                globeProjection.rotate(newRotation);
+
+
+                if (lastDragTime) {
+                    const dt = currentTime - lastDragTime;
+                    if (dt > 0) {
+                        rotationVelocity[0] = (dx * k) / dt * 16;
+                        rotationVelocity[1] = (-dy * k) / dt * 16;
                     }
                 }
             } else {
@@ -518,12 +524,12 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
             lastDragTime = currentTime;
             dragStart = [event.clientX, event.clientY];
             renderProjectionFrame(currentProjectionState);
-        }
-        
-        if (isPointInVisibleArea(x, y)) {
-            globeCanvas.node().style.cursor = event.buttons ? 'grabbing' : 'grab';
         } else {
-            globeCanvas.node().style.cursor = 'default';
+            if (isPointInVisibleArea(x, y)) {
+                globeCanvas.node().style.cursor = 'grab';
+            } else {
+                globeCanvas.node().style.cursor = 'default';
+            }
         }
     }
 
@@ -540,6 +546,11 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
             dragStart = [event.clientX, event.clientY];
             lastDragTime = performance.now();
             globeCanvas.node().style.cursor = 'grabbing';
+            if (inertiaAnimationId) {
+                cancelAnimationFrame(inertiaAnimationId);
+                inertiaAnimationId = null;
+            }
+            rotationVelocity = [0, 0]; // Reset velocity on new drag
         }
     }
 
@@ -547,23 +558,24 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
      * Handle mouse up event
      */
     function handleMouseUp(event) {
-        isDragging = false;
-        dragStart = null;
-        lastDragTime = null;
-        
-        const rect = globeCanvas.node().getBoundingClientRect();
-        const x = event.clientX - rect.left;
-        const y = event.clientY - rect.top;
-        
-        if (isPointInVisibleArea(x, y)) {
-            globeCanvas.node().style.cursor = 'grab';
-        }
-        
-        // Start inertia animation if we have velocity
-        if (currentProjectionState === PROJECTION_STATE.ORTHOGRAPHIC &&
-            (Math.abs(rotationVelocity[0]) > MIN_VELOCITY || Math.abs(rotationVelocity[1]) > MIN_VELOCITY)) {
-            if (inertiaAnimationId === null) {
-                inertiaAnimationId = requestAnimationFrame(applyInertia);
+        if (isDragging) {
+            isDragging = false;
+            dragStart = null;
+            
+            const rect = globeCanvas.node().getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+            
+            if (isPointInVisibleArea(x, y)) {
+                globeCanvas.node().style.cursor = 'grab';
+            }
+            
+            // Start inertia animation if we have velocity
+            if (currentProjectionState === PROJECTION_STATE.ORTHOGRAPHIC &&
+                (Math.abs(rotationVelocity[0]) > MIN_VELOCITY || Math.abs(rotationVelocity[1]) > MIN_VELOCITY)) {
+                if (inertiaAnimationId === null) {
+                    applyInertia(); // Start the animation
+                }
             }
         }
     }
@@ -580,6 +592,7 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
         globeCanvas.node().addEventListener('mousemove', handleMouseMove);
         globeCanvas.node().addEventListener('mousedown', handleMouseDown);
         globeCanvas.node().addEventListener('mouseup', handleMouseUp);
+        globeCanvas.node().addEventListener('mouseout', handleMouseUp); // Stop dragging if mouse leaves canvas
 
         zoom = d3.zoom()
             .scaleExtent([0.8, 10])
