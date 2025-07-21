@@ -33,6 +33,11 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
         MERCATOR: 1
     };
     let currentProjectionState = PROJECTION_STATE.ORTHOGRAPHIC;
+    
+    // Variables for handling rotation
+    let isDragging = false;
+    let dragStart = null;
+    let currentRotation = [...ORTHOGRAPHIC_ROTATION];
 
     /**
      * Creates a custom projection that can smoothly interpolate between two different
@@ -158,7 +163,10 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
         const canvasWidth = +globeCanvas.attr("width");
         const canvasHeight = +globeCanvas.attr("height");
 
-        const interpolatedRotation = d3.interpolate(ORTHOGRAPHIC_ROTATION, MERCATOR_ROTATION)(transitionProgress);
+        const interpolatedRotation = d3.interpolate(
+            currentProjectionState === PROJECTION_STATE.ORTHOGRAPHIC ? currentRotation : ORTHOGRAPHIC_ROTATION,
+            MERCATOR_ROTATION
+        )(transitionProgress);
         const interpolatedScale = d3.interpolate(orthographicScale, mercatorScale)(transitionProgress);
         const interpolatedTranslation = d3.interpolate(
             [canvasWidth / 2, canvasHeight / 2], 
@@ -323,12 +331,29 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
     }
 
     /**
-     * Handle mouse movement to update cursor style
+     * Handle mouse movement to update cursor style and handle rotation
      */
     function handleMouseMove(event) {
         const rect = globeCanvas.node().getBoundingClientRect();
         const x = event.clientX - rect.left;
         const y = event.clientY - rect.top;
+        
+        if (isDragging && dragStart && currentProjectionState === PROJECTION_STATE.ORTHOGRAPHIC) {
+            const dx = event.clientX - dragStart[0];
+            const dy = event.clientY - dragStart[1];
+            
+            // For longitude (x-axis rotation), adjust the rotation speed based on latitude
+            // This ensures consistent horizontal rotation direction regardless of orientation
+            const latitudeRadians = currentRotation[1] * Math.PI / 180;
+            const rotationDirection = Math.sign(Math.cos(latitudeRadians));
+            currentRotation[0] = currentRotation[0] + dx * 0.5 * rotationDirection;
+            
+            // For latitude (y-axis), invert the movement to match natural drag direction
+            currentRotation[1] = currentRotation[1] - dy * 0.5;
+            
+            dragStart = [event.clientX, event.clientY];
+            renderProjectionFrame(currentProjectionState);
+        }
         
         if (isPointInVisibleArea(x, y)) {
             globeCanvas.node().style.cursor = event.buttons ? 'grabbing' : 'grab';
@@ -345,7 +370,9 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
         const x = event.clientX - rect.left;
         const y = event.clientY - rect.top;
         
-        if (isPointInVisibleArea(x, y)) {
+        if (isPointInVisibleArea(x, y) && currentProjectionState === PROJECTION_STATE.ORTHOGRAPHIC) {
+            isDragging = true;
+            dragStart = [event.clientX, event.clientY];
             globeCanvas.node().style.cursor = 'grabbing';
         }
     }
@@ -354,6 +381,9 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
      * Handle mouse up event
      */
     function handleMouseUp(event) {
+        isDragging = false;
+        dragStart = null;
+        
         const rect = globeCanvas.node().getBoundingClientRect();
         const x = event.clientX - rect.left;
         const y = event.clientY - rect.top;
