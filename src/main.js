@@ -28,6 +28,7 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
 
     let zoom; // To handle zoom functionality
     let currentZoomTransform = d3.zoomIdentity;
+    let initialCanvasSize = { width: 0, height: 0 };
 
     let projectionTransitionId = null;
     let isProjectionTransitioning = false;
@@ -137,11 +138,16 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
         const newCanvasWidth = globeCanvasWrapper.node().clientWidth;
         const newCanvasHeight = globeCanvasWrapper.node().clientHeight;
 
+        if (initialCanvasSize.width === 0) {
+            initialCanvasSize.width = newCanvasWidth;
+            initialCanvasSize.height = newCanvasHeight;
+        }
+
         if (+globeCanvas.attr("width") !== newCanvasWidth || +globeCanvas.attr("height") !== newCanvasHeight) {
             globeCanvas.attr("width", newCanvasWidth);
             globeCanvas.attr("height", newCanvasHeight);
             
-            orthographicScale = Math.min(newCanvasWidth, newCanvasHeight) / 2 - 10;
+            orthographicScale = Math.min(initialCanvasSize.width, initialCanvasSize.height) / 2 - 10;
             calculateMercatorViewportParameters();
 
             if (zoom) {
@@ -203,7 +209,8 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
             interpolatedTranslation[1]
         ];
 
-        const finalScale = interpolatedScale * currentZoomTransform.k;
+        const zoomScale = (currentProjectionState === PROJECTION_STATE.ORTHOGRAPHIC && !isProjectionTransitioning) ? currentZoomTransform.k : 1;
+        const finalScale = interpolatedScale * zoomScale;
 
         globeProjection
             .alpha(transitionProgress)
@@ -319,6 +326,10 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
                 isProjectionTransitioning = false;
                 projectionToggleButton.disabled = false;
                 currentProjectionState = targetProjectionState;
+                if (currentProjectionState === PROJECTION_STATE.MERCATOR) {
+                    currentZoomTransform = d3.zoomIdentity;
+                    d3.select(globeContext.canvas).call(zoom.transform, d3.zoomIdentity);
+                }
                 renderProjectionFrame(targetProjectionState);
             }
         }
@@ -365,7 +376,7 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
         const dx = x - centerX;
         const dy = y - centerY;
         const distance = Math.sqrt(dx * dx + dy * dy);
-        return distance <= orthographicScale;
+        return distance <= orthographicScale * currentZoomTransform.k;
     }
 
     /**
@@ -383,9 +394,11 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
         const centerX = canvasWidth / 2;
         const centerY = canvasHeight / 2;
 
+        const currentScale = orthographicScale * currentZoomTransform.k;
+
         // Convert to normalized device coordinates (-1 to 1)
-        const nx = (x - centerX) / orthographicScale;
-        const ny = (y - centerY) / orthographicScale;
+        const nx = (x - centerX) / currentScale;
+        const ny = (y - centerY) / currentScale;
 
         // Check if point is on sphere
         const r2 = nx * nx + ny * ny;
@@ -394,8 +407,18 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
         // Convert to latitude and longitude
         const r = Math.sqrt(r2);
         const c = Math.asin(r); // Central angle
-        const longitude = Math.atan2(nx * Math.sin(c), r * Math.cos(c)) * 180 / Math.PI;
-        const latitude = Math.asin(ny * Math.sin(c) / r) * 180 / Math.PI;
+        const sin_c = Math.sin(c);
+        const cos_c = Math.cos(c);
+
+        const rotation = globeProjection.rotate();
+        const R = d3.geoRotation(rotation);
+        const p_inv = R.invert([x,y]);
+
+        const lambda = p_inv[0] * Math.PI / 180;
+        const phi = p_inv[1] * Math.PI / 180;
+
+        const longitude = Math.atan2(nx * sin_c, r * cos_c) * 180 / Math.PI;
+        const latitude = (r === 0) ? Math.asin(ny * sin_c / 1) * 180 / Math.PI : Math.asin(ny * sin_c / r) * 180 / Math.PI;
 
         return [longitude, latitude];
     }
@@ -458,6 +481,8 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
             const currentTime = performance.now();
             
             if (currentProjectionState === PROJECTION_STATE.ORTHOGRAPHIC) {
+                const dx = event.clientX - dragStart[0];
+                const dy = event.clientY - dragStart[1];
                 // Get the spherical coordinates for current and previous positions
                 const currentPos = screenToSphere(x, y);
                 const startPos = screenToSphere(dragStart[0], dragStart[1]);
@@ -513,6 +538,7 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
         if (isPointInVisibleArea(x, y) && currentProjectionState === PROJECTION_STATE.ORTHOGRAPHIC) {
             isDragging = true;
             dragStart = [event.clientX, event.clientY];
+            lastDragTime = performance.now();
             globeCanvas.node().style.cursor = 'grabbing';
         }
     }
@@ -556,14 +582,14 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
         globeCanvas.node().addEventListener('mouseup', handleMouseUp);
 
         zoom = d3.zoom()
-            .scaleExtent([1, 10])
+            .scaleExtent([0.8, 10])
             .filter(event => {
                 // Only allow wheel events for zooming.
                 // This prevents d3.zoom from interfering with drag-to-rotate.
                 return event.type === 'wheel';
             })
             .on('zoom', (event) => {
-                if (currentProjectionState === PROJECTION_STATE.ORTHOGRAPHIC) {
+                if (currentProjectionState === PROJECTION_STATE.ORTHOGRAPHIC && !isProjectionTransitioning) {
                     currentZoomTransform = event.transform;
                     renderProjectionFrame(currentProjectionState);
                 }
