@@ -172,8 +172,14 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
         const canvasWidth = +globeCanvas.attr("width");
         const canvasHeight = +globeCanvas.attr("height");
 
+        // When going from Mercator to orthographic, we need to calculate an initial rotation
+        // that matches the current Mercator offset
+        const startRotation = currentProjectionState === PROJECTION_STATE.MERCATOR ? 
+            [(-mercatorOffset / mercatorScale) * (180 / Math.PI), 0, 0] : 
+            currentRotation;
+
         const interpolatedRotation = d3.interpolate(
-            currentProjectionState === PROJECTION_STATE.ORTHOGRAPHIC ? currentRotation : ORTHOGRAPHIC_ROTATION,
+            startRotation,
             MERCATOR_ROTATION
         )(transitionProgress);
         const interpolatedScale = d3.interpolate(orthographicScale, mercatorScale)(transitionProgress);
@@ -273,6 +279,12 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
         
         isProjectionTransitioning = true;
         projectionToggleButton.disabled = true;
+
+        // When transitioning from Mercator to orthographic, set initial rotation
+        if (currentProjectionState === PROJECTION_STATE.MERCATOR && 
+            targetProjectionState === PROJECTION_STATE.ORTHOGRAPHIC) {
+            currentRotation = [(-mercatorOffset / mercatorScale) * (180 / Math.PI), 0, 0];
+        }
 
         const TRANSITION_DURATION = 1500;
         const transitionEasing = d3.easeCubicInOut;
