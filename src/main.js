@@ -34,13 +34,15 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
     };
     let currentProjectionState = PROJECTION_STATE.ORTHOGRAPHIC;
     
-    // Variables for handling rotation
+    // Variables for handling rotation and dragging
     let isDragging = false;
     let dragStart = null;
     let currentRotation = [...ORTHOGRAPHIC_ROTATION];
+    let mercatorOffset = 0; // Horizontal offset for Mercator projection
     
     // Variables for handling inertia
     let rotationVelocity = [0, 0];
+    let mercatorVelocity = 0;
     let lastDragTime = null;
     let inertiaAnimationId = null;
     const FRICTION = 0.95; // Decay factor (0-1)
@@ -180,11 +182,18 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
             mercatorTranslation
         )(transitionProgress);
 
+        // Apply the Mercator horizontal offset during transition
+        const interpolatedOffset = transitionProgress * mercatorOffset;
+        const adjustedTranslation = [
+            interpolatedTranslation[0] - interpolatedOffset,
+            interpolatedTranslation[1]
+        ];
+
         globeProjection
             .alpha(transitionProgress)
             .rotate(interpolatedRotation)
             .scale(interpolatedScale)
-            .translate(interpolatedTranslation);
+            .translate(adjustedTranslation);
 
         globeContext.clearRect(0, 0, canvasWidth, canvasHeight);
         globeContext.save();
@@ -373,19 +382,37 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
      * Apply inertia to continue rotation after dragging
      */
     function applyInertia() {
-        if (Math.abs(rotationVelocity[0]) < MIN_VELOCITY && Math.abs(rotationVelocity[1]) < MIN_VELOCITY) {
-            cancelAnimationFrame(inertiaAnimationId);
-            inertiaAnimationId = null;
-            return;
+        if (currentProjectionState === PROJECTION_STATE.ORTHOGRAPHIC) {
+            if (Math.abs(rotationVelocity[0]) < MIN_VELOCITY && Math.abs(rotationVelocity[1]) < MIN_VELOCITY) {
+                cancelAnimationFrame(inertiaAnimationId);
+                inertiaAnimationId = null;
+                return;
+            }
+
+            // Apply velocity to rotation
+            currentRotation[0] += rotationVelocity[0];
+            currentRotation[1] += rotationVelocity[1];
+
+            // Apply friction
+            rotationVelocity[0] *= FRICTION;
+            rotationVelocity[1] *= FRICTION;
+        } else {
+            if (Math.abs(mercatorVelocity) < MIN_VELOCITY) {
+                cancelAnimationFrame(inertiaAnimationId);
+                inertiaAnimationId = null;
+                return;
+            }
+
+            // Apply velocity to mercator offset
+            mercatorOffset += mercatorVelocity;
+            
+            // Wrap around when crossing bounds
+            const fullWidth = mercatorScale * 2 * Math.PI;
+            mercatorOffset = ((mercatorOffset % fullWidth) + fullWidth) % fullWidth;
+            
+            // Apply friction
+            mercatorVelocity *= FRICTION;
         }
-
-        // Apply velocity to rotation
-        currentRotation[0] += rotationVelocity[0];
-        currentRotation[1] += rotationVelocity[1];
-
-        // Apply friction
-        rotationVelocity[0] *= FRICTION;
-        rotationVelocity[1] *= FRICTION;
 
         renderProjectionFrame(currentProjectionState);
         inertiaAnimationId = requestAnimationFrame(applyInertia);
@@ -405,31 +432,44 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
             return;
         }
         
-        if (isDragging && dragStart && currentProjectionState === PROJECTION_STATE.ORTHOGRAPHIC) {
-            // Get the spherical coordinates for current and previous positions
-            const currentPos = screenToSphere(x, y);
-            const startPos = screenToSphere(dragStart[0], dragStart[1]);
+        if (isDragging && dragStart) {
+            const currentTime = performance.now();
             
-            if (currentPos && startPos) {
-                // Calculate the rotation needed to move from start to current position
-                const deltaLon = currentPos[0] - startPos[0];
-                const deltaLat = currentPos[1] - startPos[1];
+            if (currentProjectionState === PROJECTION_STATE.ORTHOGRAPHIC) {
+                // Get the spherical coordinates for current and previous positions
+                const currentPos = screenToSphere(x, y);
+                const startPos = screenToSphere(dragStart[0], dragStart[1]);
                 
-                // Update rotation (positive deltaLon for natural horizontal movement)
-                currentRotation[0] += deltaLon;
-                currentRotation[1] -= deltaLat;
+                if (currentPos && startPos) {
+                    // Calculate the rotation needed to move from start to current position
+                    const deltaLon = currentPos[0] - startPos[0];
+                    const deltaLat = currentPos[1] - startPos[1];
+                    
+                    // Update rotation (positive deltaLon for natural horizontal movement)
+                    currentRotation[0] += deltaLon;
+                    currentRotation[1] -= deltaLat;
 
-                // Calculate velocity based on time delta
-                const currentTime = performance.now();
+                    // Calculate velocity based on time delta
+                    if (lastDragTime) {
+                        const dt = currentTime - lastDragTime;
+                        rotationVelocity[0] = deltaLon / dt * 16;
+                        rotationVelocity[1] = -deltaLat / dt * 16;
+                    }
+                }
+            } else {
+                // Handle Mercator projection dragging
+                const dx = event.clientX - dragStart[0];
+                mercatorOffset -= dx;
+                
+                // Calculate velocity for mercator scrolling
                 if (lastDragTime) {
                     const dt = currentTime - lastDragTime;
-                    rotationVelocity[0] = deltaLon / dt * 16; // Scale to roughly pixels per frame
-                    rotationVelocity[1] = -deltaLat / dt * 16;
+                    mercatorVelocity = -dx / dt * 16;
                 }
-                lastDragTime = currentTime;
             }
             
-            dragStart = [x, y];
+            lastDragTime = currentTime;
+            dragStart = [event.clientX, event.clientY];
             renderProjectionFrame(currentProjectionState);
         }
         
