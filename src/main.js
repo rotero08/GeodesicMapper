@@ -338,6 +338,14 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
         const x = event.clientX - rect.left;
         const y = event.clientY - rect.top;
         
+        // Check if we're outside the visible area while dragging
+        if (isDragging && !isPointInVisibleArea(x, y)) {
+            isDragging = false;
+            dragStart = null;
+            globeCanvas.node().style.cursor = 'default';
+            return;
+        }
+        
         if (isDragging && dragStart && currentProjectionState === PROJECTION_STATE.ORTHOGRAPHIC) {
             const dx = event.clientX - dragStart[0];
             const dy = event.clientY - dragStart[1];
