@@ -333,6 +333,35 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
     /**
      * Handle mouse movement to update cursor style and handle rotation
      */
+    /**
+     * Convert screen coordinates to spherical coordinates (longitude, latitude)
+     * @param {number} x - Screen x coordinate
+     * @param {number} y - Screen y coordinate
+     * @returns {[number, number]} [longitude, latitude] in degrees, or null if not on sphere
+     */
+    function screenToSphere(x, y) {
+        const canvasWidth = +globeCanvas.attr("width");
+        const canvasHeight = +globeCanvas.attr("height");
+        const centerX = canvasWidth / 2;
+        const centerY = canvasHeight / 2;
+
+        // Convert to normalized device coordinates (-1 to 1)
+        const nx = (x - centerX) / orthographicScale;
+        const ny = (y - centerY) / orthographicScale;
+
+        // Check if point is on sphere
+        const r2 = nx * nx + ny * ny;
+        if (r2 > 1) return null;
+
+        // Convert to latitude and longitude
+        const r = Math.sqrt(r2);
+        const c = Math.asin(r); // Central angle
+        const longitude = Math.atan2(nx * Math.sin(c), r * Math.cos(c)) * 180 / Math.PI;
+        const latitude = Math.asin(ny * Math.sin(c) / r) * 180 / Math.PI;
+
+        return [longitude, latitude];
+    }
+
     function handleMouseMove(event) {
         const rect = globeCanvas.node().getBoundingClientRect();
         const x = event.clientX - rect.left;
@@ -347,19 +376,21 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
         }
         
         if (isDragging && dragStart && currentProjectionState === PROJECTION_STATE.ORTHOGRAPHIC) {
-            const dx = event.clientX - dragStart[0];
-            const dy = event.clientY - dragStart[1];
+            // Get the spherical coordinates for current and previous positions
+            const currentPos = screenToSphere(x, y);
+            const startPos = screenToSphere(dragStart[0], dragStart[1]);
             
-            // For longitude (x-axis rotation), adjust the rotation speed based on latitude
-            // This ensures consistent horizontal rotation direction regardless of orientation
-            const latitudeRadians = currentRotation[1] * Math.PI / 180;
-            const rotationDirection = Math.sign(Math.cos(latitudeRadians));
-            currentRotation[0] = currentRotation[0] + dx * 0.5 * rotationDirection;
+            if (currentPos && startPos) {
+                // Calculate the rotation needed to move from start to current position
+                const deltaLon = currentPos[0] - startPos[0];
+                const deltaLat = currentPos[1] - startPos[1];
+                
+                // Update rotation (positive deltaLon for natural horizontal movement)
+                currentRotation[0] += deltaLon;
+                currentRotation[1] -= deltaLat;
+            }
             
-            // For latitude (y-axis), invert the movement to match natural drag direction
-            currentRotation[1] = currentRotation[1] - dy * 0.5;
-            
-            dragStart = [event.clientX, event.clientY];
+            dragStart = [x, y];
             renderProjectionFrame(currentProjectionState);
         }
         
