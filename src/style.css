@@ -41,11 +41,6 @@ body {
   justify-content: center;
   align-items: center;
   background-color: #000;
-  cursor: grab;
-}
-
-#globe-canvas-wrapper:active {
-  cursor: grabbing;
 }
 
 #globe-canvas {

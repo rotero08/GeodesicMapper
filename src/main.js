@@ -1,276 +1,383 @@
-// src/main.js
+/**
+ * GeodesicMapper: Interactive globe visualization that smoothly transitions between
+ * orthographic (3D globe) and Mercator (2D map) projections.
+ */
+
 import * as d3 from 'd3';
 import * as topojson from 'topojson-client';
 
-// Get canvas and context using d3.select for consistency
-const canvasWrapper = d3.select("#globe-canvas-wrapper");
-const canvas = d3.select("#globe-canvas");
-const context = canvas.node().getContext('2d'); // Get native context from D3 selection
-const toggleButton = document.getElementById('projection-toggle');
+const globeCanvasWrapper = d3.select("#globe-canvas-wrapper");
+const globeCanvas = d3.select("#globe-canvas");
+const globeContext = globeCanvas.node().getContext('2d');
+const projectionToggleButton = document.getElementById('projection-toggle');
 
 
-if (!canvas.node() || !toggleButton || !canvasWrapper.node()) {
+if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()) {
     console.error("Required DOM elements (canvas, toggle button, or canvas wrapper) not found!");
 } else {
-    // --- Global Variables ---
-    let projection;
-    let path;
-    let countries = null; // Variable to hold countries GeoJSON data
+    let globeProjection;
+    let projectionPath;
+    let worldCountries = null;
 
-    // Projection parameters (initial values)
-    const orthographicRotate = [10, -20, 0];
-    let orthographicScale; // Will be calculated dynamically
-    const mercatorRotate = [0, 0, 0];
-    let mercatorScale; // Will be determined by fitSize
-    let mercatorTranslate; // Will be determined by fitSize
+    const ORTHOGRAPHIC_ROTATION = [10, -20, 0];
+    let orthographicScale;
+    const MERCATOR_ROTATION = [0, 0, 0];
+    let mercatorScale;
+    let mercatorTranslation;
+    let mercatorViewportClipping = null;
 
-    let animationId = null;
-    let isAnimating = false;
-    let currentProjectionState = 0; // 0: orthographic, 1: mercator
+    let projectionTransitionId = null;
+    let isProjectionTransitioning = false;
+    const PROJECTION_STATE = {
+        ORTHOGRAPHIC: 0,
+        MERCATOR: 1
+    };
+    let currentProjectionState = PROJECTION_STATE.ORTHOGRAPHIC;
 
-    // --- Helper function to interpolate between two raw projections ---
-    function interpolateProjection(raw0, raw1) {
-        const mutate = d3.geoProjectionMutator(t => (x, y) => {
-            const [x0, y0] = raw0(x, y);
-            const [x1, y1] = raw1(x, y);
-            return [x0 + t * (x1 - x0), y0 + t * (y1 - y0)];
+    /**
+     * Creates a custom projection that can smoothly interpolate between two different
+     * map projections (e.g., orthographic to Mercator).
+     * 
+     * @param {Function} startProjection - Initial projection (e.g., orthographic for globe view)
+     * @param {Function} endProjection - Target projection (e.g., Mercator for flat map)
+     * @returns {Object} An interpolated projection with an alpha parameter to control transition
+     */
+    function createProjectionInterpolator(startProjection, endProjection) {
+        const projectionMutator = d3.geoProjectionMutator(transitionProgress => (longitude, latitude) => {
+            const [x0, y0] = startProjection(longitude, latitude);
+            const [x1, y1] = endProjection(longitude, latitude);
+            return [
+                x0 + transitionProgress * (x1 - x0),
+                y0 + transitionProgress * (y1 - y0)
+            ];
         });
-        let t = 0;
-        return Object.assign(mutate(t), {
-            alpha(_) {
-                return arguments.length ? mutate(t = +_) : t;
+        let transitionProgress = 0;
+        return Object.assign(projectionMutator(transitionProgress), {
+            alpha(progress) {
+                return arguments.length ? projectionMutator(transitionProgress = +progress) : transitionProgress;
             }
         });
     }
 
-    // --- Geographic Data Definitions ---
-    const equator = { type: "LineString", coordinates: [[-180, 0], [-90, 0], [0, 0], [90, 0], [180, 0]] };
-    const sphere = { type: "Sphere" };
-    const graticule = d3.geoGraticule10();
-    const diagonalLine = {
+    const equatorLine = {
+        type: "LineString",
+        coordinates: [[-180, 0], [-90, 0], [0, 0], [90, 0], [180, 0]]
+    };
+    const globeSphere = { type: "Sphere" };
+    const coordinateGrid = d3.geoGraticule10();
+    const sampleTrajectoryLine = {
         type: "LineString",
         coordinates: [[-150, -60], [-75, -30], [0, 0], [75, 30], [150, 60]]
     };
 
     /**
-     * Calculates Mercator projection parameters dynamically based on current canvas size.
-     * Uses d3.geoMercator().fitSize() to ensure the world map fits perfectly.
+     * Custom latitude bounds for Mercator projection to avoid extreme distortion
+     * near the poles while maintaining a visually balanced map view.
      */
-    function calculateMercatorParams() {
-        const currentWidth = +canvas.attr("width");
-        const currentHeight = +canvas.attr("height");
+    const MERCATOR_LATITUDE_BOUNDS = {
+        MIN: -83,
+        MAX: 86
+    };
 
-        const tempMercatorProjection = d3.geoMercator()
+    /**
+     * Calculates the necessary parameters for the Mercator projection view including:
+     * - Appropriate scale to fit the map within the canvas
+     * - Translation to center the map
+     * - Viewport clipping bounds to hide extreme polar distortions
+     */
+    function calculateMercatorViewportParameters() {
+        const canvasWidth = +globeCanvas.attr("width");
+        const canvasHeight = +globeCanvas.attr("height");
+
+        const temporaryMercatorProjection = d3.geoMercator()
             .precision(0.1);
 
-        // Fit the entire sphere (world) into the current canvas dimensions
-        tempMercatorProjection.fitSize([currentWidth, currentHeight], sphere);
+        mercatorScale = (Math.min(canvasWidth, canvasHeight)) / (2 * Math.PI);
 
-        mercatorScale = tempMercatorProjection.scale();
-        mercatorTranslate = tempMercatorProjection.translate();
+        temporaryMercatorProjection.scale(mercatorScale)
+                                   .translate([canvasWidth / 2, canvasHeight / 2]);
+
+        const northernBoundaryY = temporaryMercatorProjection([0, MERCATOR_LATITUDE_BOUNDS.MAX])[1];
+        const southernBoundaryY = temporaryMercatorProjection([0, MERCATOR_LATITUDE_BOUNDS.MIN])[1];
+
+        const viewportHeight = southernBoundaryY - northernBoundaryY;
+        const verticalCenteringOffset = (canvasHeight / 2) - (northernBoundaryY + viewportHeight / 2);
+
+        mercatorTranslation = [canvasWidth / 2, verticalCenteringOffset + canvasHeight / 2];
+
+        temporaryMercatorProjection.scale(mercatorScale).translate(mercatorTranslation);
+
+        mercatorViewportClipping = {
+            x: 0,
+            y: Math.min(canvasWidth, temporaryMercatorProjection([0, MERCATOR_LATITUDE_BOUNDS.MAX])[1]),
+            width: canvasWidth,
+            height: temporaryMercatorProjection([0, MERCATOR_LATITUDE_BOUNDS.MIN])[1] - 
+                   temporaryMercatorProjection([0, MERCATOR_LATITUDE_BOUNDS.MAX])[1]
+        };
     }
 
-    /**
-     * Updates canvas dimensions and projection parameters on resize.
-     * This is the core of the responsive logic.
-     */
-    function updateDimensions() {
-        // Get dimensions from the *wrapper* element
-        let newWidth = canvasWrapper.node().clientWidth;
-        let newHeight = canvasWrapper.node().clientHeight;
+    function handleCanvasResize() {
+        const newCanvasWidth = globeCanvasWrapper.node().clientWidth;
+        const newCanvasHeight = globeCanvasWrapper.node().clientHeight;
 
-        // Only update if dimensions have actually changed to prevent unnecessary redraws
-        if (+canvas.attr("width") !== newWidth || +canvas.attr("height") !== newHeight) {
-            // Set canvas attributes (which define the drawing surface size)
-            canvas.attr("width", newWidth);
-            canvas.attr("height", newHeight);
+        if (+globeCanvas.attr("width") !== newCanvasWidth || +globeCanvas.attr("height") !== newCanvasHeight) {
+            globeCanvas.attr("width", newCanvasWidth);
+            globeCanvas.attr("height", newCanvasHeight);
             
-            // Re-calculate orthographic scale based on new dimensions
-            orthographicScale = Math.min(newWidth, newHeight) / 2 - 10// Adjusted to fit with some padding
+            orthographicScale = Math.min(newCanvasWidth, newCanvasHeight) / 2 - 10;
+            calculateMercatorViewportParameters();
 
-            // Re-calculate Mercator parameters for the new size
-            calculateMercatorParams();
-
-            // Initialize or update the main projection object and path generator
-            if (!projection) {
-                projection = interpolateProjection(d3.geoOrthographicRaw, d3.geoMercatorRaw)
+            if (!globeProjection) {
+                globeProjection = createProjectionInterpolator(d3.geoOrthographicRaw, d3.geoMercatorRaw)
                     .precision(0.1);
             }
-            path = d3.geoPath(projection, context);
+            projectionPath = d3.geoPath(globeProjection, globeContext);
 
-            // Set the projection's scale and translate based on the current state and new dimensions
-            projection.scale(currentProjectionState === 0 ? orthographicScale : mercatorScale);
-            projection.translate(currentProjectionState === 0 ? [newWidth / 2, newHeight / 2] : mercatorTranslate);
-            projection.rotate(currentProjectionState === 0 ? orthographicRotate : mercatorRotate); // Ensure rotation is reset/set correctly
+            globeProjection.scale(currentProjectionState === PROJECTION_STATE.ORTHOGRAPHIC ? orthographicScale : mercatorScale);
+            globeProjection.translate(currentProjectionState === PROJECTION_STATE.ORTHOGRAPHIC ? 
+                [newCanvasWidth / 2, newCanvasHeight / 2] : mercatorTranslation);
+            globeProjection.rotate(currentProjectionState === PROJECTION_STATE.ORTHOGRAPHIC ? 
+                ORTHOGRAPHIC_ROTATION : MERCATOR_ROTATION);
 
-            // Re-render the globe with the updated parameters
-            if (countries) { // Only render if countries data is already loaded
-                renderFrame(currentProjectionState);
+            if (worldCountries) {
+                renderProjectionFrame(currentProjectionState);
             }
         }
     }
 
     /**
-     * Renders a single frame of the globe.
-     * @param {number} interpolatedT - The interpolation factor (0 to 1) for blending orthographic to mercator.
-     * 0 for pure orthographic, 1 for pure mercator.
+     * Renders a single frame of the globe/map visualization.
+     * Handles the smooth transition between orthographic and Mercator projections by:
+     * 1. Interpolating projection parameters (rotation, scale, translation)
+     * 2. Applying appropriate clipping for different projection stages
+     * 3. Rendering geographic features in the correct order
+     * 
+     * @param {number} transitionProgress - Value between 0 (orthographic) and 1 (Mercator)
      */
-    function renderFrame(interpolatedT) {
-        const currentWidth = +canvas.attr("width");
-        const currentHeight = +canvas.attr("height");
+    function renderProjectionFrame(transitionProgress) {
+        const canvasWidth = +globeCanvas.attr("width");
+        const canvasHeight = +globeCanvas.attr("height");
 
-        // Interpolate rotation, scale, and translate
-        const interpolatedRotate = d3.interpolate(orthographicRotate, mercatorRotate)(interpolatedT);
-        const interpolatedScale = d3.interpolate(orthographicScale, mercatorScale)(interpolatedT);
-        const interpolatedTranslate = d3.interpolate([currentWidth / 2, currentHeight / 2], mercatorTranslate)(interpolatedT);
+        const interpolatedRotation = d3.interpolate(ORTHOGRAPHIC_ROTATION, MERCATOR_ROTATION)(transitionProgress);
+        const interpolatedScale = d3.interpolate(orthographicScale, mercatorScale)(transitionProgress);
+        const interpolatedTranslation = d3.interpolate(
+            [canvasWidth / 2, canvasHeight / 2], 
+            mercatorTranslation
+        )(transitionProgress);
 
-        // Apply interpolated projection parameters
-        projection
-            .alpha(interpolatedT)
-            .rotate(interpolatedRotate)
+        globeProjection
+            .alpha(transitionProgress)
+            .rotate(interpolatedRotation)
             .scale(interpolatedScale)
-            .translate(interpolatedTranslate);
+            .translate(interpolatedTranslation);
 
-        // Clear canvas
-        context.clearRect(0, 0, currentWidth, currentHeight);
+        globeContext.clearRect(0, 0, canvasWidth, canvasHeight);
+        globeContext.save();
 
-        // --- DRAW ORDER: Countries (fill all), then Sphere/Lines ---
-
-        // Apply clipping for countries during the first half of the transition
-        if (interpolatedT <= 0.5) { // Orthographic part of transition (0 to 0.5)
-            // Clip angle starts at 90 (hemisphere) and expands to 180 (full sphere)
-            const countryClipAngle = 90 + (interpolatedT * 2) * 90;
-            projection.clipAngle(countryClipAngle);
-        } else { // Mercator part of transition (0.5 to 1)
-            projection.clipAngle(null); // No clipping for Mercator countries
+        if (transitionProgress > 0.5 && mercatorViewportClipping) {
+            globeContext.beginPath();
+            globeContext.rect(
+                mercatorViewportClipping.x,
+                mercatorViewportClipping.y,
+                mercatorViewportClipping.width,
+                mercatorViewportClipping.height
+            );
+            globeContext.clip();
         }
 
-        // Draw countries
-        if (countries) {
-            context.beginPath();
-            path(countries);
-            context.fillStyle = "#336699"; // Blue color for countries
-            context.fill();
-            context.lineWidth = 0.5;
-            context.strokeStyle = "#ffffff"; // White borders
-            context.stroke();
-        }
-
-        // --- Apply clipping for graticule, equator, and diagonal line ---
-        // These lines should generally fade out or become less prominent as the Mercator projection is fully visible.
-        // Or, if always visible, they should only be clipped when the globe is purely Orthographic.
-        // For simplicity, we'll keep a similar clipping logic to countries for a smooth unfold.
-        // A more nuanced approach might use opacity or different clip logic based on what you want to show.
-        let lineClipAngle;
-        if (interpolatedT <= 0.5) {
-             // Lines also unfold from 90 to 180
-            lineClipAngle = 90 + (interpolatedT * 2) * 90;
+        // During the first half of the transition, we gradually expand the visible portion
+        // of the globe from a hemisphere (90°) to a full sphere (180°) before switching to Mercator
+        const HEMISPHERE_VIEW_THRESHOLD = 0.5;
+        if (transitionProgress <= HEMISPHERE_VIEW_THRESHOLD) {
+            const hemisphereExpansionAngle = 90 + (transitionProgress * 2) * 10;
+            globeProjection.clipAngle(hemisphereExpansionAngle);
         } else {
-            // No clipping for lines in Mercator view
-            lineClipAngle = 180;
+            globeProjection.clipAngle(null);
         }
-        projection.clipAngle(lineClipAngle);
+
+        if (worldCountries) {
+            globeContext.beginPath();
+            projectionPath(worldCountries);
+            globeContext.fillStyle = "#336699";
+            globeContext.fill();
+            globeContext.lineWidth = 0.5;
+            globeContext.strokeStyle = "#ffffff";
+            globeContext.stroke();
+        }
+
+        const cartographicElementsClipAngle = transitionProgress <= HEMISPHERE_VIEW_THRESHOLD ?
+            90 + (transitionProgress * 2) * 90 : 
+            180;
+        globeProjection.clipAngle(cartographicElementsClipAngle);
 
 
-        // Draw graticule
-        context.beginPath();
-        path(graticule);
-        context.lineWidth = 0.5;
-        context.strokeStyle = "rgba(255, 255, 255, 0.2)";
-        context.stroke();
+        globeContext.beginPath();
+        projectionPath(coordinateGrid);
+        globeContext.lineWidth = 0.5;
+        globeContext.strokeStyle = "rgba(255, 255, 255, 0.2)";
+        globeContext.stroke();
 
-        // Draw sphere outline (visible in orthographic view, less meaningful in Mercator)
-        context.beginPath();
-        path(sphere);
-        context.lineWidth = 1.5;
-        context.strokeStyle = "#fff"; // White outline for sphere
-        context.stroke();
+        globeContext.beginPath();
+        projectionPath(globeSphere);
+        globeContext.lineWidth = 1.5;
+        globeContext.strokeStyle = "#fff";
+        globeContext.stroke();
 
-        // Draw equator (visibility controlled by clipAngle)
-        context.beginPath();
-        path(equator);
-        context.lineWidth = 2;
-        context.strokeStyle = "#ff4444"; // Red line for equator
-        context.stroke();
+        globeContext.beginPath();
+        projectionPath(equatorLine);
+        globeContext.lineWidth = 2;
+        globeContext.strokeStyle = "#ff4444";
+        globeContext.stroke();
 
-        // Draw the diagonal line
-        context.beginPath();
-        path(diagonalLine);
-        context.lineWidth = 2; // Make it a bit thicker
-        context.strokeStyle = "#00FF00"; // Green color for visibility
-        context.stroke();
+        globeContext.beginPath();
+        projectionPath(sampleTrajectoryLine);
+        globeContext.lineWidth = 2;
+        globeContext.strokeStyle = "#00FF00";
+        globeContext.stroke();
+
+        globeContext.restore();
     }
 
     /**
-     * Animates the projection transition.
-     * @param {number} targetState - The desired final projection state (0 for ortho, 1 for mercator).
+     * Manages the animated transition between projection states using requestAnimationFrame.
+     * Applies easing for smooth acceleration and deceleration of the transition.
+     * 
+     * @param {number} targetProjectionState - The projection state to transition to (ORTHOGRAPHIC or MERCATOR)
      */
-    function animateProjection(targetState) {
-        if (isAnimating) return;
-        isAnimating = true;
-        toggleButton.disabled = true;
+    function animateProjectionTransition(targetProjectionState) {
+        if (isProjectionTransitioning) return;
+        
+        isProjectionTransitioning = true;
+        projectionToggleButton.disabled = true;
 
-        const duration = 1500; // milliseconds
-        const ease = d3.easeCubicInOut;
-        let startTime = null;
+        const TRANSITION_DURATION = 1500;
+        const transitionEasing = d3.easeCubicInOut;
+        let transitionStartTime = null;
 
-        const startT = currentProjectionState;
-        const endT = targetState;
+        const initialState = currentProjectionState;
+        const finalState = targetProjectionState;
 
-        function loop(currentTime) {
-            if (!startTime) startTime = currentTime;
-            const elapsed = currentTime - startTime;
-            let tProgress = Math.min(1, elapsed / duration);
+        function transitionFrame(timestamp) {
+            if (!transitionStartTime) transitionStartTime = timestamp;
+            const elapsedTime = timestamp - transitionStartTime;
+            const normalizedProgress = Math.min(1, elapsedTime / TRANSITION_DURATION);
 
-            const interpolatedFactor = startT + (endT - startT) * ease(tProgress);
+            const transitionProgress = initialState + 
+                (finalState - initialState) * transitionEasing(normalizedProgress);
 
-            renderFrame(interpolatedFactor);
+            renderProjectionFrame(transitionProgress);
 
-            if (elapsed < duration) {
-                animationId = requestAnimationFrame(loop);
+            if (elapsedTime < TRANSITION_DURATION) {
+                projectionTransitionId = requestAnimationFrame(transitionFrame);
             } else {
-                isAnimating = false;
-                toggleButton.disabled = false;
-                currentProjectionState = targetState;
-                renderFrame(targetState); // Ensure final state is rendered precisely
+                isProjectionTransitioning = false;
+                projectionToggleButton.disabled = false;
+                currentProjectionState = targetProjectionState;
+                renderProjectionFrame(targetProjectionState);
             }
         }
-        animationId = requestAnimationFrame(loop);
+        projectionTransitionId = requestAnimationFrame(transitionFrame);
+    }
+
+    function toggleProjectionType() {
+        if (isProjectionTransitioning) return;
+
+        const targetState = currentProjectionState === PROJECTION_STATE.ORTHOGRAPHIC ? 
+            PROJECTION_STATE.MERCATOR : 
+            PROJECTION_STATE.ORTHOGRAPHIC;
+        
+        animateProjectionTransition(targetState);
     }
 
     /**
-     * Toggles the projection between orthographic and mercator.
+     * Check if a point is within the visible area of the current projection
      */
-    function transformProjection() {
-        if (isAnimating) return;
+    function isPointInVisibleArea(x, y) {
+        // For Mercator projection after transition midpoint
+        if (currentProjectionState === PROJECTION_STATE.MERCATOR || 
+            (isProjectionTransitioning && globeProjection.alpha() > 0.5)) {
+            if (!mercatorViewportClipping) return false;
+            
+            // For Mercator, calculate the actual map width based on the scale
+            const canvasWidth = +globeCanvas.attr("width");
+            const mapWidth = mercatorScale * 2 * Math.PI; // Full map width at current scale
+            const horizontalPadding = (canvasWidth - mapWidth) / 2;
+            
+            // Check both vertical and horizontal bounds
+            const inVerticalBounds = y >= mercatorViewportClipping.y && 
+                                   y <= mercatorViewportClipping.y + mercatorViewportClipping.height;
+            const inHorizontalBounds = x >= horizontalPadding && x <= canvasWidth - horizontalPadding;
+            
+            return inVerticalBounds && inHorizontalBounds;
+        }
+        
+        // For orthographic projection, check if point is within the visible hemisphere
+        const canvasWidth = +globeCanvas.attr("width");
+        const canvasHeight = +globeCanvas.attr("height");
+        const centerX = canvasWidth / 2;
+        const centerY = canvasHeight / 2;
+        const dx = x - centerX;
+        const dy = y - centerY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        return distance <= orthographicScale;
+    }
 
-        if (currentProjectionState === 0) { // Currently orthographic, transform to mercator
-            animateProjection(1); // Target state is 1 (mercator)
-        } else { // Currently mercator, transform back to orthographic
-            animateProjection(0); // Target state is 0 (orthographic)
+    /**
+     * Handle mouse movement to update cursor style
+     */
+    function handleMouseMove(event) {
+        const rect = globeCanvas.node().getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        
+        if (isPointInVisibleArea(x, y)) {
+            globeCanvas.node().style.cursor = event.buttons ? 'grabbing' : 'grab';
+        } else {
+            globeCanvas.node().style.cursor = 'default';
         }
     }
 
-    // --- Data Loading and Initialization ---
-    // Load world data and then initialize the globe
-    d3.json("https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json").then(world => {
-        countries = topojson.feature(world, world.objects.countries);
-        console.log("Countries data loaded:", countries);
+    /**
+     * Handle mouse down event
+     */
+    function handleMouseDown(event) {
+        const rect = globeCanvas.node().getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        
+        if (isPointInVisibleArea(x, y)) {
+            globeCanvas.node().style.cursor = 'grabbing';
+        }
+    }
 
-        // Initial setup of dimensions and projection after data is loaded
-        updateDimensions();
+    /**
+     * Handle mouse up event
+     */
+    function handleMouseUp(event) {
+        const rect = globeCanvas.node().getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        
+        if (isPointInVisibleArea(x, y)) {
+            globeCanvas.node().style.cursor = 'grab';
+        }
+    }
 
-        // Initial render after data is loaded and dimensions are set
-        renderFrame(currentProjectionState);
-
-        // Event listener for the toggle button (moved here to ensure data is ready)
-        toggleButton.addEventListener('click', transformProjection);
-
+    // Initialize the visualization by loading world map data, setting up the canvas,
+    // and establishing event listeners for user interaction
+    d3.json("https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json").then(worldAtlasData => {
+        worldCountries = topojson.feature(worldAtlasData, worldAtlasData.objects.countries);
+        handleCanvasResize();
+        renderProjectionFrame(currentProjectionState);
+        projectionToggleButton.addEventListener('click', toggleProjectionType);
+        
+        // Add mouse event listeners for cursor handling
+        globeCanvas.node().addEventListener('mousemove', handleMouseMove);
+        globeCanvas.node().addEventListener('mousedown', handleMouseDown);
+        globeCanvas.node().addEventListener('mouseup', handleMouseUp);
     }).catch(error => {
         console.error("Error loading the world atlas data:", error);
     });
 
-    // --- Responsive Resize Handler ---
-    // Call updateDimensions on window resize
-    window.addEventListener('resize', updateDimensions);
+    window.addEventListener('resize', handleCanvasResize);
 }
