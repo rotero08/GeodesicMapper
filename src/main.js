@@ -26,6 +26,9 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
     let mercatorTranslation;
     let mercatorViewportClipping = null;
 
+    let zoom; // To handle zoom functionality
+    let currentZoomTransform = d3.zoomIdentity;
+
     let projectionTransitionId = null;
     let isProjectionTransitioning = false;
     const PROJECTION_STATE = {
@@ -141,6 +144,11 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
             orthographicScale = Math.min(newCanvasWidth, newCanvasHeight) / 2 - 10;
             calculateMercatorViewportParameters();
 
+            if (zoom) {
+                currentZoomTransform = d3.zoomIdentity;
+                d3.select(globeContext.canvas).call(zoom.transform, currentZoomTransform);
+            }
+
             if (!globeProjection) {
                 globeProjection = createProjectionInterpolator(d3.geoOrthographicRaw, d3.geoMercatorRaw)
                     .precision(0.1);
@@ -195,10 +203,12 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
             interpolatedTranslation[1]
         ];
 
+        const finalScale = interpolatedScale * currentZoomTransform.k;
+
         globeProjection
             .alpha(transitionProgress)
             .rotate(interpolatedRotation)
-            .scale(interpolatedScale)
+            .scale(finalScale)
             .translate(adjustedTranslation);
 
         globeContext.clearRect(0, 0, canvasWidth, canvasHeight);
@@ -544,6 +554,22 @@ if (!globeCanvas.node() || !projectionToggleButton || !globeCanvasWrapper.node()
         globeCanvas.node().addEventListener('mousemove', handleMouseMove);
         globeCanvas.node().addEventListener('mousedown', handleMouseDown);
         globeCanvas.node().addEventListener('mouseup', handleMouseUp);
+
+        zoom = d3.zoom()
+            .scaleExtent([1, 10])
+            .filter(event => {
+                // Only allow wheel events for zooming.
+                // This prevents d3.zoom from interfering with drag-to-rotate.
+                return event.type === 'wheel';
+            })
+            .on('zoom', (event) => {
+                if (currentProjectionState === PROJECTION_STATE.ORTHOGRAPHIC) {
+                    currentZoomTransform = event.transform;
+                    renderProjectionFrame(currentProjectionState);
+                }
+            });
+        d3.select(globeContext.canvas).call(zoom);
+
     }).catch(error => {
         console.error("Error loading the world atlas data:", error);
     });
