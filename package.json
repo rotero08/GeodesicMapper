@@ -1,0 +1,20 @@
+{
+  "name": "geodesic-mapper",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Interactive globe that morphs between map projections, with great-circle and rhumb-line measurement.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "d3-geo": "^3.1.1",
+    "d3-geo-projection": "^4.0.0",
+    "topojson-client": "^3.1.0"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0"
+  }
+}
