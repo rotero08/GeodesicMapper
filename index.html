@@ -2,99 +2,158 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>Geodesic Mapper</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Geodesic Mapper · morph a globe into a map and measure the shortest path</title>
+<meta name="description" content="An interactive globe that morphs between 14 map projections and draws the shortest path (great circle) next to the constant-bearing path (rhumb line), with live distances and bearings. Runs offline.">
+<meta name="theme-color" content="#091420">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Geodesic Mapper">
+<meta property="og:description" content="Morph a globe into 14 map projections and compare the shortest path with the constant-bearing path.">
+<link rel="icon" href="./favicon.svg" type="image/svg+xml">
 </head>
 <body>
 <div class="app">
-  <div class="stage" id="stage">
-    <canvas id="map"></canvas>
-    <div class="topbar">
-      <div class="brand">
-        <h1>GEODESIC <b>MAPPER</b></h1>
-        <div class="sub">projection morph &amp; geodesy bench</div>
-        <div class="rule"></div>
+  <main class="stage" id="stage">
+    <div class="sky" id="sky"></div>
+    <canvas id="map" tabindex="0" role="application"
+      aria-label="Interactive map. Drag or use the arrow keys to rotate, scroll or plus and minus to zoom, question mark for all shortcuts."></canvas>
+
+    <header class="brand">
+      <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+        <circle cx="16" cy="16" r="13" fill="none" stroke="currentColor" stroke-width="1.6"/>
+        <ellipse cx="16" cy="16" rx="5.5" ry="13" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".7"/>
+        <path d="M3.5 16h25M6 9.5h20M6 22.5h20" fill="none" stroke="currentColor" stroke-width="1.1" opacity=".55"/>
+        <path d="M6.5 23.5C11 11 22 8 26 9" fill="none" stroke="#e7ab40" stroke-width="2.2" stroke-linecap="round"/>
+        <circle cx="6.5" cy="23.5" r="2.4" fill="#e7ab40"/><circle cx="26" cy="9" r="2.4" fill="#e7ab40"/>
+      </svg>
+      <div>
+        <h1>Geodesic <b>Mapper</b></h1>
+        <p class="sub">projection morph &amp; geodesy bench</p>
       </div>
+    </header>
+
+    <div class="readout cursor" id="cursor" aria-hidden="true">
+      <span class="rk">Cursor</span>
+      <span class="rv mono" id="cursor-pos">— , —</span>
+      <span class="rc" id="cursor-country"></span>
     </div>
 
-    <div class="readout tl">
-      <div class="rk">Cursor</div>
-      <div class="rv mono" id="cursor">— , —</div>
-    </div>
+    <section class="summary" id="summary" aria-label="Selected route" hidden></section>
 
-    <div class="readout bl" id="measure" style="display:none">
-      <div class="rrow"><span class="rk">Great circle</span><span class="v mono" id="m-gc">—</span></div>
-      <div class="rrow"><span class="rk">Rhumb line</span><span class="v rust mono" id="m-rh">—</span></div>
-      <div class="rrow"><span class="rk">Init. bearing</span><span class="v mono" id="m-br" style="color:var(--cyan)">—</span></div>
-      <div class="rrow"><span class="rk">Points</span><span class="v mono" id="m-pts" style="color:var(--tx)">0</span></div>
+    <div class="dock">
+      <div class="actionbar" id="actionbar" hidden>
+        <span class="mono" id="action-count">1 point</span>
+        <button class="btn small primary" id="act-finish" type="button">Finish <kbd>Enter</kbd></button>
+        <button class="btn small" id="act-undo" type="button">Undo <kbd>⌫</kbd></button>
+        <button class="btn small" id="act-cancel" type="button">Cancel <kbd>Esc</kbd></button>
+      </div>
+      <p class="hint" id="hint">Drag to spin · scroll to zoom</p>
     </div>
-
-    <div class="hint" id="hint">Drag to spin · scroll to zoom · middle-drag spins in any tool</div>
 
     <div class="zoomctl">
-      <button id="zin" title="Zoom in" aria-label="Zoom in"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14M7 5v4M5 7h4"/></svg></button>
-      <button id="zout" title="Zoom out" aria-label="Zoom out"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14M5 7h4"/></svg></button>
-    </div>
-    <div class="err" id="err"></div>
-  </div>
-
-  <aside class="panel">
-    <div class="sec">
-      <h2>Map projection</h2>
-      <div class="selwrap">
-        <select id="projsel" aria-label="Map projection"></select>
-        <svg class="caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5 8 10.5 12 6.5"/></svg>
-      </div>
+      <button id="zin" type="button" title="Zoom in (+)" aria-label="Zoom in"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 8h10M8 3v10"/></svg></button>
+      <button id="zout" type="button" title="Zoom out (−)" aria-label="Zoom out"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 8h10"/></svg></button>
     </div>
 
-    <div class="sec">
-      <h2>Globe to map</h2>
-      <div class="tline"><b>Globe</b><b id="t-to">Mercator</b></div>
-      <input type="range" id="t" min="0" max="1" step="0.001" value="0">
-      <div class="row">
-        <button class="btn" id="play"><svg viewBox="0 0 16 16" fill="currentColor" stroke="none"><path d="M4.5 3.2v9.6a.6.6 0 0 0 .92.5l7.2-4.8a.6.6 0 0 0 0-1L5.42 2.7a.6.6 0 0 0-.92.5Z"/></svg><span>Play morph</span></button>
-        <button class="btn" id="reset"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12.5 8a4.5 4.5 0 1 1-1.3-3.2"/><path d="M12.8 2.6v2.6h-2.6"/></svg><span>Reset view</span></button>
-      </div>
-    </div>
+    <div class="toast" id="toast" hidden></div>
+    <div class="sr-only" id="live" role="status" aria-live="polite"></div>
+  </main>
 
-    <div class="sec">
-      <h2>Tools</h2>
-      <div class="row wrap" style="margin-bottom:7px">
-        <button class="btn on" data-tool="rotate"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.7v12.6M1.7 8h12.6M8 1.7 6.2 3.6M8 1.7l1.8 1.9M8 14.3l-1.8-1.9M8 14.3l1.8-1.9M1.7 8l1.9-1.8M1.7 8l1.9 1.8M14.3 8l-1.9-1.8M14.3 8l-1.9 1.8"/></svg><span>Rotate</span></button>
-        <button class="btn" data-tool="draw"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3.5"/><circle cx="3.1" cy="12.9" r="1.7" fill="currentColor" stroke="none"/><circle cx="12.7" cy="3.6" r="1.7" fill="currentColor" stroke="none"/></svg><span>Measure</span></button>
-        <button class="btn" data-tool="marker"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 14.4s4.4-4.1 4.4-7.4a4.4 4.4 0 1 0-8.8 0C3.6 10.3 8 14.4 8 14.4Z"/><circle cx="8" cy="6.8" r="1.6"/></svg><span>Marker</span></button>
-        <button class="btn" data-tool="cut"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="4" cy="4" r="2.1"/><circle cx="4" cy="12" r="2.1"/><path d="M5.7 5.6 14 12M5.7 10.4 14 4"/></svg><span>Cut</span></button>
+  <aside class="panel" id="panel" aria-label="Controls">
+    <details class="sec" open>
+      <summary><h2>Projection</h2></summary>
+      <div class="body">
+        <div class="selwrap">
+          <select id="projsel" aria-label="Map projection"></select>
+          <svg class="caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5 8 10.5 12 6.5"/></svg>
+        </div>
+        <div class="info" id="projinfo">
+          <ul class="tags" id="projtags"></ul>
+          <p id="projblurb"></p>
+        </div>
+        <div class="tline"><label for="t">Globe</label><b id="t-to">Mercator</b></div>
+        <input type="range" id="t" min="0" max="1" step="0.001" value="0" aria-label="Morph from globe to map">
+        <div class="row">
+          <button class="btn primary" id="play" type="button"></button>
+          <button class="btn" id="reset" type="button"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.5 8a4.5 4.5 0 1 1-1.3-3.2"/><path d="M12.8 2.6v2.6h-2.6"/></svg><span>Reset view</span></button>
+        </div>
       </div>
-      <div class="row">
-        <button class="btn warn" id="erase"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.7 4h10.6M6 4V2.6h4V4M3.9 4l.7 9.4a1 1 0 0 0 1 .92h4.8a1 1 0 0 0 1-.92L12.1 4M6.5 6.6v5M9.5 6.6v5"/></svg><span>Clear all</span></button>
-      </div>
-      <div class="legend">
-        <div><i class="li-gc"></i>Great circle — shortest path on the sphere</div>
-        <div><i class="li-rh"></i>Rhumb line — constant compass bearing</div>
-        <div style="margin-top:5px">Left-click measures · right-click undoes a point · Cut deletes one path</div>
-      </div>
-    </div>
+    </details>
 
-    <div class="sec">
-      <h2>Layers</h2>
-      <div class="toggles" id="layers">
-        <div class="tg on" data-k="countries"><div><span>Countries</span><small>land fill &amp; borders</small></div><div class="sw"></div></div>
-        <div class="tg on" data-k="graticule"><div><span>Graticule</span><small>lat / lon grid</small></div><div class="sw"></div></div>
-        <div class="tg on" data-k="rhumb"><div><span>Compare rhumb</span><small>overlay loxodrome on paths</small></div><div class="sw"></div></div>
-        <div class="tg" data-k="tissot"><div><span>Tissot indicatrix</span><small>show projection distortion</small></div><div class="sw"></div></div>
-        <div class="tg" data-k="terminator"><div><span>Day / night</span><small>current sun terminator</small></div><div class="sw"></div></div>
-        <div class="tg on" data-k="stars"><div><span>Starfield</span><small>ambient space backdrop</small></div><div class="sw"></div></div>
-        <div class="tg" data-k="spin"><div><span>Auto-spin</span><small>idle globe rotation</small></div><div class="sw"></div></div>
+    <details class="sec" open>
+      <summary><h2>Routes</h2></summary>
+      <div class="body">
+        <form class="routeform" id="routeform" autocomplete="off" novalidate>
+          <div class="combo"><label for="from">From</label>
+            <input id="from" type="text" placeholder="City, or 40.4, -3.7" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="from-list" spellcheck="false">
+            <ul class="options" id="from-list" role="listbox" hidden></ul></div>
+          <div class="combo"><label for="to">To</label>
+            <input id="to" type="text" placeholder="City, or 35.7, 139.7" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="to-list" spellcheck="false">
+            <ul class="options" id="to-list" role="listbox" hidden></ul></div>
+          <button class="btn primary wide" type="submit">Draw route</button>
+        </form>
+        <div class="examples">
+          <span class="rk">Try</span>
+          <div class="chips" id="examples"></div>
+        </div>
+        <p class="note" id="exnote" hidden></p>
+        <ol class="routes" id="routes" aria-label="Your routes"></ol>
+        <p class="empty" id="routes-empty">No routes yet. Pick two places above, or choose <b>Measure</b> and click the map.</p>
       </div>
-    </div>
+    </details>
 
-    <div class="sec">
-      <h2>Units</h2>
-      <div class="row">
-        <button class="btn on" data-unit="km">Kilometres</button>
-        <button class="btn" data-unit="mi">Miles</button>
+    <details class="sec" open>
+      <summary><h2>Tools</h2></summary>
+      <div class="body">
+        <div class="row wrap" role="group" aria-label="Tool">
+          <button class="btn tool" data-tool="rotate" type="button" aria-pressed="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.7v12.6M1.7 8h12.6M8 1.7 6.2 3.6M8 1.7l1.8 1.9M8 14.3l-1.8-1.9M8 14.3l1.8-1.9M1.7 8l1.9-1.8M1.7 8l1.9 1.8M14.3 8l-1.9-1.8M14.3 8l-1.9 1.8"/></svg><span>Rotate</span></button>
+          <button class="btn tool" data-tool="draw" type="button" aria-pressed="false"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M3 13 13 3.5"/><circle cx="3.1" cy="12.9" r="1.7" fill="currentColor" stroke="none"/><circle cx="12.7" cy="3.6" r="1.7" fill="currentColor" stroke="none"/></svg><span>Measure</span></button>
+          <button class="btn tool" data-tool="marker" type="button" aria-pressed="false"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 14.4s4.4-4.1 4.4-7.4a4.4 4.4 0 1 0-8.8 0C3.6 10.3 8 14.4 8 14.4Z"/><circle cx="8" cy="6.8" r="1.6"/></svg><span>Marker</span></button>
+          <button class="btn tool" data-tool="cut" type="button" aria-pressed="false"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><circle cx="4" cy="4" r="2.1"/><circle cx="4" cy="12" r="2.1"/><path d="M5.7 5.6 14 12M5.7 10.4 14 4"/></svg><span>Cut</span></button>
+        </div>
+        <div class="row"><button class="btn warn" id="erase" type="button"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.7 4h10.6M6 4V2.6h4V4M3.9 4l.7 9.4a1 1 0 0 0 1 .92h4.8a1 1 0 0 0 1-.92L12.1 4M6.5 6.6v5M9.5 6.6v5"/></svg><span>Clear all</span></button></div>
+        <ul class="legend">
+          <li><i class="swatch gc"></i>Great circle: the shortest path on the sphere</li>
+          <li><i class="swatch rh"></i>Rhumb line: a constant compass bearing</li>
+        </ul>
       </div>
-    </div>
+    </details>
+
+    <details class="sec" open>
+      <summary><h2>Layers</h2></summary>
+      <div class="body"><div class="toggles" id="layers"></div></div>
+    </details>
+
+    <details class="sec" open>
+      <summary><h2>Units &amp; sharing</h2></summary>
+      <div class="body">
+        <div class="row" role="group" aria-label="Distance unit" id="units"></div>
+        <div class="row wrap">
+          <button class="btn" id="share" type="button"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.5 9.5a3 3 0 0 0 4.2 0l2.3-2.3a3 3 0 0 0-4.2-4.2L7.5 4.3M9.5 6.5a3 3 0 0 0-4.2 0L3 8.8A3 3 0 0 0 7.2 13l1.3-1.3"/></svg><span>Copy link</span></button>
+          <button class="btn" id="png" type="button"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="1.5"/><circle cx="6" cy="7" r="1.2"/><path d="m3 12 3.5-3.5 2.5 2.5 2-2 2 2"/></svg><span>Save image</span></button>
+          <button class="btn" id="geojson" type="button"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v8m0 0 3-3m-3 3L5 7M3 12.5h10"/></svg><span>Export GeoJSON</span></button>
+          <button class="btn" id="import" type="button"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 10V2m0 0L5 5m3-3 3 3M3 12.5h10"/></svg><span>Import</span></button>
+          <input type="file" id="importfile" accept=".geojson,.json,application/geo+json,application/json" hidden>
+        </div>
+      </div>
+    </details>
+
+    <footer class="foot">
+      <details>
+        <summary>Keyboard shortcuts</summary>
+        <dl class="keys">
+          <div><dt><kbd>Space</kbd></dt><dd>Play or pause the morph</dd></div>
+          <div><dt><kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd></dt><dd>Rotate (hold <kbd>Shift</kbd> for bigger steps)</dd></div>
+          <div><dt><kbd>+</kbd> <kbd>−</kbd></dt><dd>Zoom</dd></div>
+          <div><dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>Previous or next projection</dd></div>
+          <div><dt><kbd>V</kbd> <kbd>M</kbd> <kbd>P</kbd> <kbd>X</kbd></dt><dd>Rotate, Measure, Marker, Cut</dd></div>
+          <div><dt><kbd>Enter</kbd> <kbd>Esc</kbd> <kbd>⌫</kbd></dt><dd>Finish, cancel, undo the last point</dd></div>
+          <div><dt><kbd>R</kbd></dt><dd>Reset the view</dd></div>
+        </dl>
+        <p class="small">Right-click the map also undoes a point. Distances use a spherical Earth (mean radius 6,371 km), which is within about 0.5&nbsp;% of the true ellipsoid.</p>
+      </details>
+      <p class="small credits">Coastlines and places: <a href="https://www.naturalearthdata.com/" target="_blank" rel="noopener">Natural Earth</a> (public domain). Built with <a href="https://d3js.org/" target="_blank" rel="noopener">D3</a>.</p>
+    </footer>
   </aside>
 </div>
 <script type="module" src="/src/main.js"></script>
