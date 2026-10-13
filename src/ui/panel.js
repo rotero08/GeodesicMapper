@@ -138,7 +138,16 @@ function setupSharing(app) {
 
 function setupRoutes(app) {
   const picked = { from: null, to: null };
-  const search = async (query) => searchPlaces(await loadPlaces(), query);
+  // The place index is a separate download; if it cannot be fetched, search simply finds nothing.
+  const places = async () => {
+    try {
+      return await loadPlaces();
+    } catch {
+      app.toast('The place list could not be loaded. Type coordinates instead.');
+      return [];
+    }
+  };
+  const search = async (query) => searchPlaces(await places(), query);
 
   for (const which of ['from', 'to']) {
     createCombobox({
@@ -159,7 +168,7 @@ function setupRoutes(app) {
   const resolve = async (which) => {
     if (picked[which]) return picked[which];
     const text = $(`#${which}`).value;
-    return searchPlaces(await loadPlaces(), text)[0] ?? null;
+    return searchPlaces(await places(), text)[0] ?? null;
   };
 
   $('#routeform').addEventListener('submit', async (event) => {
@@ -183,9 +192,9 @@ function setupRoutes(app) {
           class: 'chip',
           type: 'button',
           onclick: async () => {
-            const places = await loadPlaces();
-            const a = findPlace(places, example.from);
-            const b = findPlace(places, example.to);
+            const index = await places();
+            const a = findPlace(index, example.from);
+            const b = findPlace(index, example.to);
             if (!a || !b) return;
             app.drawRoute([a.lon, a.lat], [b.lon, b.lat], `${a.name} → ${b.name}`);
             note.textContent = example.note;

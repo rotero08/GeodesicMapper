@@ -10,7 +10,8 @@ one and the shortest route is the curve; on a gnomonic map it is the other way r
 
 ![The globe with a great circle and a rhumb line from Madrid to Tokyo](docs/screenshot-globe.webp)
 
-It is a static site: no server, no accounts, no tracking, and it works offline once loaded.
+It is a static site: no server, no accounts, no tracking, and nothing is fetched from anywhere but its own
+host (no map tiles, no CDN, no API), so it also runs from a local file server with the network off.
 
 ## What you can do
 
