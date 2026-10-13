@@ -1,10 +1,14 @@
 import { defineConfig } from 'vite';
 
 export default defineConfig({
-  // relative base => built site works when served from a subfolder or opened locally
+  // A relative base lets the built site run from any folder or sub-path (GitHub Pages included).
   base: './',
   build: {
     outDir: 'dist',
-    assetsInlineLimit: 0,
+    target: 'es2022',
+  },
+  test: {
+    environment: 'node',
+    include: ['tests/**/*.test.js'],
   },
 });

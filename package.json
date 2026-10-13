@@ -1,20 +1,34 @@
 {
   "name": "geodesic-mapper",
   "private": true,
-  "version": "1.0.0",
+  "version": "2.0.0",
   "type": "module",
   "description": "Interactive globe that morphs between map projections, with great-circle and rhumb-line measurement.",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "smoke": "node scripts/smoke.mjs",
+    "screenshots": "node scripts/screenshots.mjs"
   },
   "dependencies": {
     "d3-geo": "^3.1.1",
     "d3-geo-projection": "^4.0.0",
-    "topojson-client": "^3.1.0"
+    "topojson-client": "^3.1.0",
+    "world-atlas": "^2.0.2"
   },
   "devDependencies": {
-    "vite": "^5.4.0"
+    "@eslint/js": "^10.0.0",
+    "eslint": "^10.0.0",
+    "globals": "^17.0.0",
+    "puppeteer-core": "^24.0.0",
+    "vite": "^8.0.0",
+    "vitest": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=20.19"
   }
 }
