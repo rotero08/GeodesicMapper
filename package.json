@@ -4,6 +4,7 @@
   "version": "2.0.0",
   "type": "module",
   "description": "Interactive globe that morphs between map projections, with great-circle and rhumb-line measurement.",
+  "license": "MIT",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

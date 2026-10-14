@@ -166,3 +166,7 @@ tests, build and the smoke test).
   [`world-atlas`](https://github.com/topojson/world-atlas) (ISC); places: Natural Earth populated places.
 - Projections and geometry: [D3](https://d3js.org/) (`d3-geo`, `d3-geo-projection`), TopoJSON.
 - Sun position: the low-precision formulae of the Astronomical Almanac.
+
+## License
+
+[MIT](LICENSE). The map data keeps its own terms (see Credits above).
