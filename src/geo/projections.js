@@ -237,28 +237,62 @@ const radialOf = (raw, c) => raw(0, c)[1];
 
 /**
  * How far from the view centre (in degrees) the blend of `A` and `B` may show before the picture
- * folds back on itself. The limit is the smaller of "grow from A's reach to B's" and the first
- * angle beyond the horizon where the blended radius stops increasing.
+ * folds back on itself. The limit is the smaller of "grow from A's reach to B's" and the angle
+ * beyond the horizon where the blended radius stops increasing, found to a hundredth of a degree
+ * so that the view grows smoothly instead of in steps of a whole degree.
  */
 function horizonFor(A, B, u) {
   const reachA = A.clip ?? 180;
   const reachB = B.clip ?? 180 - 1e-3;
   // A flat map has no reach of its own: what limits the view is only where the picture folds.
-  const wanted = B.azimuthal ? lerp(reachA, reachB, u) : 180;
   const rawA = safe(A.raw);
   const rawB = safe(B.raw);
-  let previous = lerp(radialOf(rawA, 90 * RAD), radialOf(rawB, 90 * RAD), u);
+  const radius = (degrees) => lerp(radialOf(rawA, degrees * RAD), radialOf(rawB, degrees * RAD), u);
+  let wanted = B.azimuthal ? lerp(reachA, reachB, u) : 180;
+  if (B.azimuthal && reachB < 90) {
+    // A map that shows less than a hemisphere (the gnomonic) has a radius that shoots up towards 90
+    // degrees, so blending it in even a little would stretch the rim of the globe far across the
+    // screen. The view shrinks at once instead, to the angle where the blend has the radius that the
+    // outline is growing towards, which keeps the picture the size of the globe at first.
+    const goal = lerp(radialOf(rawA, reachA * RAD), radialOf(rawB, reachB * RAD), u);
+    let low = reachB;
+    let high = 89.999;
+    for (let i = 0; i < 40; i++) {
+      const mid = (low + high) / 2;
+      if (radius(mid) < goal) low = mid;
+      else high = mid;
+    }
+    wanted = (low + high) / 2;
+  }
+  let previous = radius(90);
   let fold = 180;
   for (let c = 91; c <= 180; c++) {
-    const r = lerp(radialOf(rawA, c * RAD), radialOf(rawB, c * RAD), u);
+    const r = radius(c);
     if (r < previous - 1e-9) {
-      fold = c - 1;
+      // The radius peaks between the two angles before this one: narrow it down.
+      let low = c - 2;
+      let high = c;
+      for (let i = 0; i < 24; i++) {
+        const a = low + (high - low) / 3;
+        const b = high - (high - low) / 3;
+        if (radius(a) < radius(b)) low = a;
+        else high = b;
+      }
+      fold = (low + high) / 2;
       break;
     }
     previous = r;
   }
   return Math.min(wanted, fold);
 }
+
+/**
+ * The least the view may reach while a sheet unrolls, in degrees. A clip circle of exactly a hemisphere
+ * puts the poles of the frame on its edge, where the clipping cannot tell inside from outside, and
+ * land is then drawn as a stripe down the middle of the globe. A quarter of a degree more changes
+ * nothing that can be seen: the rim it lets in is a hundredth of a pixel wide.
+ */
+const MIN_REACH = 90.25;
 
 /**
  * The globe `u` of the way to being unrolled into the flat map `B`: how far from the view centre it
@@ -268,7 +302,7 @@ function horizonFor(A, B, u) {
  * of the frame; the view is turned so its centre is at (0, 0), so none of this depends on rotation.
  */
 function unrolledSheet(rawA, rawB, A, B, u) {
-  const reach = horizonFor(A, B, u);
+  const reach = Math.max(horizonFor(A, B, u), MIN_REACH);
   const limit = reach * RAD;
   let halfWidth = 0;
   let halfHeight = 0;

@@ -2,6 +2,7 @@ import { geoCircle, geoPath } from 'd3-geo';
 import { describe, expect, it } from 'vitest';
 import { greatCircleAngle } from '../src/geo/geodesy.js';
 import { Engine, GLOBE, PROJECTIONS, TARGETS, UNROLLED_AT, byId, sharesHub, stagesFor } from '../src/geo/projections.js';
+import { coarse } from '../src/geo/world.js';
 
 const W = 1100;
 const H = 800;
@@ -188,6 +189,39 @@ describe('the globe unrolling', () => {
     }
   });
 
+  it('starts to open the view at once, and never at exactly a hemisphere', () => {
+    // A clip circle of exactly 90 degrees put a stripe of land down the middle of the globe at the
+    // very start of the morph, because the poles of the frame sit on its edge.
+    for (const t of [0.0005, 0.001, 0.002, 0.004, 0.006, 0.01]) {
+      expect(engine.frame(view({ t, rot: [0, 0, 0] })).horizon, `t=${t}`).toBeGreaterThan(90.2);
+    }
+  });
+
+  it('grows the view smoothly, not in steps of a whole degree', () => {
+    let last = engine.frame(view({ t: 0.001, rot: [0, 0, 0] })).horizon;
+    for (let t = 0.002; t <= 0.2; t += 0.001) {
+      const { horizon } = engine.frame(view({ t, rot: [0, 0, 0] }));
+      expect(horizon - last, `t=${t.toFixed(3)}`).toBeLessThan(1);
+      expect(horizon, `t=${t.toFixed(3)}`).toBeGreaterThanOrEqual(last);
+      last = horizon;
+    }
+  });
+
+  // The land is drawn through the real clipping, so a clipping fault shows as land that was not there
+  // (a stripe through the globe, a sliver across the map) or land that vanished: the area drawn is a
+  // continuous function of the morph, and a jump of a few percent in one step is such a fault.
+  it('draws the land without stripes or pops all the way through the unrolling, from any side', () => {
+    for (const rot of [[-35, -15, 0], [-12, -16, 0], [40, -50, 0], [-170, 10, 0], [0, 0, 0]]) {
+      let last = null;
+      for (let t = 0; t <= UNROLLED_AT + 1e-9; t += 0.0025) {
+        const frame = engine.frame(view({ t, rot }));
+        const area = geoPath(frame.projection).area(coarse.land);
+        if (last !== null) expect(Math.abs(area - last) / last, `rot=${rot} t=${t.toFixed(4)}`).toBeLessThan(0.025);
+        last = area;
+      }
+    }
+  }, 60_000);
+
   it('splits land that crosses the seam instead of smearing it across the map', () => {
     // A round patch of the far north that straddles the antimeridian of the view (here the 180th meridian).
     const patch = geoCircle().center([180, 75]).radius(8)();
@@ -235,6 +269,22 @@ describe('the globe unrolling', () => {
       }
     }
   });
+});
+
+// The start of a morph is where the globe's rim meets the target's very different one, and where the
+// clipping has the least room: it once drew a stripe of land down the middle of the globe, and for the
+// gnomonic map the rim shot out across the screen. Whatever the target, the first steps must be small.
+describe('the start of every morph', () => {
+  it.each(TARGETS.map((p) => p.id))('draws the first steps towards %s without stripes, streaks or pops', (target) => {
+    for (const rot of [[-35, -15, 0], [-170, 10, 0]]) {
+      let last = null;
+      for (let t = 0; t <= 0.15; t += 0.0025) {
+        const area = geoPath(engine.frame(view({ t, target, rot })).projection).area(coarse.land);
+        if (last !== null) expect(Math.abs(area - last) / last, `${target} rot=${rot} t=${t.toFixed(4)}`).toBeLessThan(0.03);
+        last = area;
+      }
+    }
+  }, 30_000);
 });
 
 describe('one map turning into another', () => {
