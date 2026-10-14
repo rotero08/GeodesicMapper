@@ -43,9 +43,9 @@ try {
   await wait(300);
   await page.screenshot({ path: `${OUT}screenshot-flat.webp`, type: 'webp', quality: 88 });
 
-  // 3. The morph as a strip of frames.
+  // 3. The morph as a strip of frames: the globe, unrolling, the unrolled sheet, then reshaped into Mercator.
   const frames = [];
-  for (const t of [0, 0.2, 0.34, 0.5, 0.75, 1]) {
+  for (const t of [0, 0.12, 0.22, 0.34, 0.5, 1]) {
     await page.evaluate((t) => {
       geodesic.clearRoutes();
       geodesic.state.target = 'mercator';

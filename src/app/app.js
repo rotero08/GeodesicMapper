@@ -4,7 +4,7 @@
 import { DEG, boundingCap, greatCircleAngle, pathMetrics } from '../geo/geodesy.js';
 import { geoJSONToRoutes, routesToGeoJSON } from '../geo/geojson.js';
 import { hitTest } from '../geo/hit.js';
-import { Engine, GLOBE, OVAL_AT, byId, sharesHub } from '../geo/projections.js';
+import { Engine, GLOBE, UNROLLED, UNROLLED_AT, byId, positionFor, unrolledAt } from '../geo/projections.js';
 import { routeGeometry } from '../geo/routes.js';
 import { coarse, countryAt, loadDetail } from '../geo/world.js';
 import { Renderer } from '../render/renderer.js';
@@ -215,8 +215,8 @@ export class App {
 
   /**
    * Animates the morph position from its current value to `to`. The position is moved by visual
-   * progress, not by `t` itself, so the picture keeps an even pace: the disc opening into the oval
-   * gets the time it needs instead of flashing past.
+   * progress, not by `t` itself, so the picture keeps an even pace: the globe unrolling gets the time
+   * it needs instead of flashing past.
    */
   #tween(to, duration, done) {
     const s = this.state;
@@ -249,18 +249,52 @@ export class App {
     this.cancelAnimation();
     const old = s.target;
     const resting = s.t;
-    const apply = () => {
+    const apply = (t = resting) => {
       s.target = id;
+      s.t = t;
       this.changed('projection');
     };
     if (resting < 0.002) return apply();
-    // Up to the whole-world oval the picture does not depend on the target at all.
-    const hub = sharesHub(old, id);
-    if (hub && resting <= OVAL_AT) return apply();
-    // Two flat maps, or two azimuthal ones, turn straight into each other.
-    if (hub || (byId[old].azimuthal && byId[id].azimuthal)) return this.#turnInto(old, id);
+    if (!byId[old].azimuthal && !byId[id].azimuthal) {
+      // Every flat map is reached by unrolling the globe, and until it is unrolled the picture does not
+      // depend on the map at all: it is carried over as it is. (Not for the plate carree itself once it
+      // is complete: that is a map already, so the other map has to be made from it.)
+      const unrolled = unrolledAt(old, resting);
+      if (unrolled !== null) {
+        if (unrolled < 1 || old !== UNROLLED) return apply(positionFor(id, unrolled));
+        return this.#reshape(id);
+      }
+      if (id === UNROLLED) return this.#backToSheet(id, resting);
+      return this.#turnInto(old, id); // two reshaped maps turn straight into each other
+    }
+    // Two azimuthal maps turn straight into each other.
+    if (byId[old].azimuthal && byId[id].azimuthal) return this.#turnInto(old, id);
     // Otherwise fold the old map back into the globe and unfold the new one from it, in one motion.
     this.#foldInto(old, id, resting);
+  }
+
+  /** The plate carree, a finished map, becoming another flat map: the sheet is reshaped, which is the second half of the morph. */
+  #reshape(id) {
+    const s = this.state;
+    s.target = id;
+    s.t = UNROLLED_AT;
+    this.emit('projection');
+    this.#animate(700, (k) => (s.t = lerp(UNROLLED_AT, 1, k)), () => this.changed('projection'), easeInOutSine);
+  }
+
+  /** A flat map becoming the plate carree: it is reshaped back into the unrolled sheet, which is that map. */
+  #backToSheet(id, resting) {
+    const s = this.state;
+    this.#animate(
+      700,
+      (k) => (s.t = lerp(resting, UNROLLED_AT, k)),
+      () => {
+        s.target = id;
+        s.t = 1;
+        this.changed('projection');
+      },
+      easeInOutSine,
+    );
   }
 
   /** One map turning directly into another, over a single smooth motion. */

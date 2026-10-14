@@ -34,27 +34,30 @@ host (no map tiles, no CDN, no API), so it also runs from a local file server wi
 
 ## How the morph works
 
-A globe cannot be flattened without tearing it, so the morph is built from four stages:
+A globe cannot be flattened without tearing it, so the morph unrolls it like a sheet of paper and then
+reshapes the sheet:
 
 ```
-globe (orthographic) → whole world as a disc → the disc opened into an oval → target map
+globe (orthographic) → the globe unrolled into the plate carrée → target map
 ```
 
 ![Six frames from globe to Mercator](docs/morph.webp)
 
-Between stages the raw projection formulas are blended point by point. While the globe unrolls, a
-computed *horizon* limits the picture to the part of the sphere that has not yet folded back on itself,
-which is what stops the far side of the Earth from ghosting through the near side. Azimuthal maps share
-the globe's geometry, so they are reached directly. Clicks and the cursor readout stay correct during the
-morph: blends that unroll the globe are inverted exactly, and the rest with Newton's method.
+Between stages the raw projection formulas are blended point by point. The sheet's seam is on the far
+side of the Earth, so the near side stays where it is and the far side appears from the edges as the sheet
+opens. A computed *horizon* limits the picture to the part of the sphere that has not yet folded back on
+itself, which is what stops the far side from ghosting through the near side. Azimuthal maps share the
+globe's round geometry, so they are reached directly. Clicks and the cursor readout stay correct during the
+morph: round blends are inverted exactly, and the rest with Newton's method.
 
 Three details keep the motion natural:
 
-* **The disc opens through a family, not a blend.** Aitoff is the azimuthal equidistant map with the
-  longitudes halved and x doubled, so the morph lets that halving go from 1 to ½ and the world's outline
-  stays rounded all the way. (A straight blend of the two turned the rim into a diamond with notches.)
-* **Even pace.** Equal steps of the slider do not look equally fast: opening the disc is a fifth of the
-  slider and most of the change. The engine measures how far the picture travels on screen
+* **One sheet, cut once.** The picture stays a single connected sheet from the globe to the map. The cut
+  is made along the seam, behind the view, and land that crosses it is split there instead of being
+  stretched across the map; the picture is framed exactly while its outline changes from a circle to a
+  rectangle.
+* **Even pace.** Equal steps of the slider do not look equally fast: the unrolling is half of the slider
+  and most of the change. The engine measures how far the picture travels on screen
   (`Engine.progress`), and both the slider and *Play morph* move by that, with a short run-up and
   run-down, so no stage rushes past. *Play morph* rests a moment at each end.
 * **Maps turn into each other.** Changing the projection on a flat map blends the old map into the new

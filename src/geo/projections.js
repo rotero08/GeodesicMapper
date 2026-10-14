@@ -1,30 +1,26 @@
 // The projection engine: a registry of map projections and the code that morphs one into another.
 //
-// The morph runs through up to four keyframes. Every flat map is reached from the globe through
-// two whole-world pictures, because those are where the far side of the Earth is visible without
-// overlapping the near side:
+// The globe becomes a flat map by being unrolled, then reshaped:
 //
-//    globe (orthographic) -> disc (azimuthal equidistant) -> oval (Aitoff) -> target map
+//    globe (orthographic) -> the plate carree, unrolled flat -> the target map
 //
-// The disc is cut open along the antimeridian and its halves slide apart into the oval, which is
-// already close to every flat map. Azimuthal targets (stereographic, gnomonic, ...) share the
-// globe's geometry and are reached directly. Between keyframes the raw projection functions are
-// blended point by point. While the globe is unrolling, a horizon limits the picture to the part
-// of the sphere that has not yet folded back on itself, which is what removes the "ghost" far
-// hemisphere.
+// The unrolling blends the globe's raw projection with the plate carree's point by point. A sheet
+// cut from a sphere needs a seam, and it is behind the view (the antimeridian), so the picture shows
+// the near side first and the far side appears from the edges as the sheet opens, like paper being
+// unrolled; at each moment the view reaches only as far as the picture has not yet folded back on
+// itself (the "horizon"), which is what removes the ghost far hemisphere. Azimuthal targets
+// (stereographic, gnomonic, ...) share the globe's round geometry and are reached directly.
 //
-// The disc opens into the oval through a family of projections rather than a straight blend of the
-// two (a straight blend turns the rim into a diamond with notches for a moment): Aitoff is the
-// azimuthal equidistant map with longitudes halved and x doubled, so letting that halving go
-// from 1 to 1/2 changes the disc into the oval through smooth, rounded shapes all the way.
-//
-// One map can also turn directly into another (a blend of the two final maps), so changing the
-// projection on a flat map does not have to fold the world up and unfold it again. Finally the
-// pace of a morph is measured: `Engine.progress` tells how far along the way the picture has
-// travelled on screen, which is what lets an animation move at an even speed.
+// From the unrolled sheet every other flat map is one straight blend away (they are all drawn on
+// the same cut sphere, so no seam moves), and one flat map can also turn directly into another, so
+// changing the projection on a flat map does not have to fold the world up and unfold it again.
+// Finally the pace of a morph is measured: `Engine.progress` tells how far along the way the picture
+// has travelled on screen, which is what lets an animation move at an even speed.
 
 import {
   geoAzimuthalEqualArea,
+  geoClipAntimeridian,
+  geoClipCircle,
   geoAzimuthalEqualAreaRaw,
   geoAzimuthalEquidistant,
   geoAzimuthalEquidistantRaw,
@@ -62,11 +58,10 @@ import {
 import { DEG, RAD, clampLat, destination, greatCircleAngle, wrapLon } from './geodesy.js';
 
 export const GLOBE = 'orthographic';
-const DISC = 'azeq';
-const OVAL = 'aitoff';
-/** Where on the 0..1 slider the whole-world disc and the oval sit, for flat maps. */
-export const DISC_AT = 0.3;
-export const OVAL_AT = 0.5;
+/** The map the unrolled globe is: the plate carree, where every other flat map begins. */
+export const UNROLLED = 'equirect';
+/** Where on the 0..1 slider the globe has been unrolled flat, for the maps that are reached through it. */
+export const UNROLLED_AT = 0.5;
 
 // `flat` says how map-like a projection is (0 globe, 1 flat map): it fades the star field and
 // the atmosphere and damps how far the view can be tilted. `clip` is the visible angle from the
@@ -169,22 +164,30 @@ const MARGIN = 2;
 /** The keyframes the slider passes through on its way from the globe to `targetId`. */
 export function stagesFor(targetId) {
   if (byId[targetId]?.azimuthal) return [{ a: GLOBE, b: targetId, from: 0, to: 1 }];
-  if (targetId === OVAL) {
-    return [
-      { a: GLOBE, b: DISC, from: 0, to: 0.4 },
-      { a: DISC, b: OVAL, from: 0.4, to: 1 },
-    ];
-  }
+  if (targetId === UNROLLED) return [{ a: GLOBE, b: UNROLLED, from: 0, to: 1 }];
   return [
-    { a: GLOBE, b: DISC, from: 0, to: DISC_AT },
-    { a: DISC, b: OVAL, from: DISC_AT, to: OVAL_AT },
-    { a: OVAL, b: targetId, from: OVAL_AT, to: 1 },
+    { a: GLOBE, b: UNROLLED, from: 0, to: UNROLLED_AT },
+    { a: UNROLLED, b: targetId, from: UNROLLED_AT, to: 1 },
   ];
 }
 
-/** True when two targets share the oval keyframe, so one map can morph straight into the other. */
+/** True when two targets share the unrolled keyframe, so one map can morph straight into the other. */
 export const sharesHub = (a, b) =>
-  [a, b].every((id) => !byId[id]?.azimuthal && id !== OVAL);
+  [a, b].every((id) => !byId[id]?.azimuthal && id !== UNROLLED);
+
+/**
+ * How far the globe has unrolled (0..1) at position `t` on the way to the flat map `targetId`, or
+ * null once it is being reshaped into that map (or when the map is azimuthal and nothing unrolls).
+ * Every flat map is reached through the same unrolling, so this is what two of them have in common.
+ */
+export function unrolledAt(targetId, t) {
+  if (byId[targetId]?.azimuthal) return null;
+  if (targetId === UNROLLED) return t;
+  return t <= UNROLLED_AT ? t / UNROLLED_AT : null;
+}
+
+/** The position on the way to the flat map `targetId` at which the globe has unrolled by `unrolled`. */
+export const positionFor = (targetId, unrolled) => (targetId === UNROLLED ? unrolled : unrolled * UNROLLED_AT);
 
 // Raw projection functions can return infinities (Mercator at the poles, gnomonic at the
 // horizon). Blending needs finite numbers, so those are replaced by a large finite stand-in.
@@ -203,25 +206,6 @@ const blendRaw = (P) =>
   (P.id === 'mercator'
     ? safe((x, y) => geoMercatorRaw(x, Math.max(-MERCATOR_LIMIT, Math.min(MERCATOR_LIMIT, y))))
     : safe(P.raw));
-
-// ---- the disc-to-oval family
-
-/** s = 1 is the azimuthal equidistant disc; s = 1/2 is the Aitoff oval (see the header). */
-export const discOvalRaw = (s) => (x, y) => {
-  const p = geoAzimuthalEquidistantRaw(s * x, y);
-  return [p[0] / s, p[1]];
-};
-
-/** Half the height of the world's outline in that family: where the cut edge climbs highest. */
-function discOvalHalfHeight(s) {
-  const raw = discOvalRaw(s);
-  let top = 0;
-  for (let i = 1; i <= 90; i++) {
-    const y = Math.abs(raw(Math.PI, (Math.PI / 2) * (i / 90))[1]);
-    if (Number.isFinite(y)) top = Math.max(top, y);
-  }
-  return Math.max(top, Math.PI / 2);
-}
 
 // ---- one map turning into another
 
@@ -259,7 +243,8 @@ const radialOf = (raw, c) => raw(0, c)[1];
 function horizonFor(A, B, u) {
   const reachA = A.clip ?? 180;
   const reachB = B.clip ?? 180 - 1e-3;
-  const wanted = lerp(reachA, reachB, u);
+  // A flat map has no reach of its own: what limits the view is only where the picture folds.
+  const wanted = B.azimuthal ? lerp(reachA, reachB, u) : 180;
   const rawA = safe(A.raw);
   const rawB = safe(B.raw);
   let previous = lerp(radialOf(rawA, 90 * RAD), radialOf(rawB, 90 * RAD), u);
@@ -273,6 +258,36 @@ function horizonFor(A, B, u) {
     previous = r;
   }
   return Math.min(wanted, fold);
+}
+
+/**
+ * The globe `u` of the way to being unrolled into the flat map `B`: how far from the view centre it
+ * can show (`reach`, in degrees) and the half width and height of its outline in raw units, which is
+ * what framing it exactly needs, because its shape and size change all along. The outline is the
+ * horizon circle, the seam (behind the view) wherever the horizon has reached it, and the pole lines
+ * of the frame; the view is turned so its centre is at (0, 0), so none of this depends on rotation.
+ */
+function unrolledSheet(rawA, rawB, A, B, u) {
+  const reach = horizonFor(A, B, u);
+  const limit = reach * RAD;
+  let halfWidth = 0;
+  let halfHeight = 0;
+  const take = (lon, lat) => {
+    const a = rawA(lon, lat);
+    const b = rawB(lon, lat);
+    halfWidth = Math.max(halfWidth, Math.abs(lerp(a[0], b[0], u)));
+    halfHeight = Math.max(halfHeight, Math.abs(lerp(a[1], b[1], u)));
+  };
+  for (let i = 0; i < 120; i++) {
+    const bearing = (2 * Math.PI * i) / 120;
+    take(Math.atan2(Math.sin(bearing) * Math.sin(limit), Math.cos(limit)), Math.asin(Math.sin(limit) * Math.cos(bearing)));
+  }
+  for (let i = 0; i <= 90; i++) {
+    const lat = Math.PI / 2 - (Math.PI * i) / 90;
+    if (Math.PI - Math.abs(lat) <= limit + 1e-9) take(Math.PI, lat);
+    take(-Math.PI + (2 * Math.PI * i) / 90, Math.PI / 2);
+  }
+  return { reach, halfWidth: Math.max(halfWidth, 1e-6), halfHeight: Math.max(halfHeight, 1e-6) };
 }
 
 /** Screen extent of a map cropped to latitudes +-`lat`, weighted from "whole canvas" to "band". */
@@ -456,8 +471,8 @@ export class Engine {
 
   /**
    * How far along the morph to `target` the picture has travelled on screen. Equal steps of
-   * progress look equally fast, which `t` does not give: the disc opening into the oval covers
-   * a small slice of `t` and the most change. Returns { toProgress(t), toT(progress) }, both 0..1.
+   * progress look equally fast, which `t` does not give: the unrolling covers a small slice of `t`
+   * and the most change. Returns { toProgress(t), toT(progress) }, both 0..1.
    */
   progress(target) {
     const key = `${target}|${this.width}x${this.height}`;
@@ -553,22 +568,23 @@ export class Engine {
         : this.fits[P.id];
     const fa = fitOf(A);
     const fb = fitOf(B);
-    const opening = A.id === DISC && B.id === OVAL; // the disc opening into the oval
 
     const flat = lerp(A.flat, B.flat, u);
     // Tilt is damped as the map flattens, and the map can be dragged vertically instead.
     const mapness = smoothstep((flat - 0.35) / 0.45);
     const rotate = [rot[0], rot[1] * (1 - flat), rot[2]];
+    const real = (P) => P.id !== 'mix';
+    const atKeyframe = (u <= EPS && real(A)) || (u >= 1 - EPS && real(B));
+    const rawA = atKeyframe ? null : blendRaw(A);
+    const rawB = atKeyframe ? null : blendRaw(B);
+    // The globe becoming a flat sheet: its outline changes shape and size all along, so frame it exactly.
+    const sheet = !atKeyframe && stage.a === GLOBE && !B.azimuthal ? unrolledSheet(rawA, rawB, A, B, u) : null;
+
     let scale = lerp(fa.scale, fb.scale, u);
     let translate = [lerp(fa.translate[0], fb.translate[0], u), lerp(fa.translate[1], fb.translate[1], u)];
-    let family = null;
-    if (opening && u > EPS && u < 1 - EPS) {
-      // The outline changes height as it opens: frame it exactly, and correct by how far the
-      // keyframes' own framing departs from the exact one so the two meet without a jump.
-      family = lerp(1, 0.5, u);
+    if (sheet) {
       const pad = Math.min(width, height) * 0.05;
-      const exact = (s) => Math.min((width - 2 * pad) / (2 * Math.PI), (height - 2 * pad) / (2 * discOvalHalfHeight(s)));
-      scale = exact(family) * lerp(fa.scale / exact(1), fb.scale / exact(0.5), u);
+      scale = Math.min((width - 2 * pad) / (2 * sheet.halfWidth), (height - 2 * pad) / (2 * sheet.halfHeight));
       translate = [width / 2, height / 2];
     }
     scale *= zoom;
@@ -580,29 +596,25 @@ export class Engine {
     let guess;
     let radial = null;
     let horizon = 180;
-    const real = (P) => P.id !== 'mix';
-    if ((u <= EPS && real(A)) || (u >= 1 - EPS && real(B))) {
+    if (atKeyframe) {
       const P = u <= EPS ? A : B;
       projection = this._real(P, scale, translate, rotate, extent);
       if (P.fitLat) projection.clipExtent(bandExtent(projection, P.fitLat, centerLon, width, height, 1));
       horizon = P.clip ?? 180;
       guess = projection; // a real projection inverts exactly
     } else {
-      const rawA = blendRaw(A);
-      const rawB = blendRaw(B);
-      projection = geoProjectionMutator((k) =>
-        family
-          ? discOvalRaw(k)
-          : (x, y) => {
-              const a = rawA(x, y);
-              const b = rawB(x, y);
-              return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k];
-            },
-      )(family ?? u);
+      projection = geoProjectionMutator((k) => (x, y) => {
+        const a = rawA(x, y);
+        const b = rawB(x, y);
+        return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k];
+      })(u);
       projection.scale(scale).translate(translate).rotate(rotate);
-      if (A.id === GLOBE) {
-        horizon = horizonFor(A, B, u);
-        projection.clipAngle(horizon);
+      if (stage.a === GLOBE) {
+        horizon = sheet ? sheet.reach : horizonFor(A, B, u);
+        // A round picture needs only the cut at the horizon circle. A sheet also has its seam (the
+        // antimeridian, behind the view), which is cut first so that land crossing it is split there.
+        if (B.azimuthal) projection.clipAngle(horizon);
+        else if (horizon < 179.9) projection.preclip((sink) => geoClipCircle(horizon * RAD)(geoClipAntimeridian(sink)));
         projection.clipExtent(extent);
       } else if (B.fitLat) {
         projection.clipExtent(extent);
@@ -613,7 +625,7 @@ export class Engine {
       // Blends have no inverse of their own; the nearer real map provides a starting guess.
       const near = u < 0.5 ? A : B;
       guess = this._real(real(near) ? near : byId[target], scale, translate, rotate, extent);
-      if (A.id === GLOBE) {
+      if (stage.a === GLOBE && B.azimuthal) {
         radial = {
           profile: (c) => lerp(radialOf(rawA, c), radialOf(rawB, c), u),
           scale,
@@ -626,7 +638,9 @@ export class Engine {
     // The globe's visible disc, for the atmosphere and the ocean shading.
     const glow = stage.a === GLOBE ? 1 - u : 0;
     let discRadius = scale;
-    if (stage.a === GLOBE && u > EPS && u < 1 - EPS) {
+    if (sheet) {
+      discRadius = scale * Math.max(sheet.halfWidth, sheet.halfHeight);
+    } else if (stage.a === GLOBE && u > EPS && u < 1 - EPS) {
       const c = horizon * RAD;
       discRadius = scale * lerp(radialOf(safe(A.raw), c), radialOf(safe(B.raw), c), u);
     } else if (u >= 1 - EPS) {

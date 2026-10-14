@@ -151,7 +151,7 @@ try {
   check((await page.evaluate(() => geodesic.state.routes.filter((r) => r.kind === 'marker').length)) === 0, 'the Cut tool deletes the route under the pointer');
   await page.keyboard.press('v');
 
-  // The morph: Play runs and Pause stops; switching map goes through the oval and ends on the new map.
+  // The morph: Play runs and Pause stops; switching to another flat map turns it straight into the new one.
   await page.evaluate(() => geodesic.setT(0));
   await page.click('#play');
   await wait(500);
@@ -164,10 +164,10 @@ try {
   await page.evaluate(() => geodesic.setT(1));
   await page.select('#projsel', 'robinson');
   await page.waitForFunction(() => geodesic.state.target === 'robinson' && !geodesic.anim, { timeout: 4000 });
-  check((await page.evaluate(() => geodesic.state.t)) === 1, 'switching map re-folds and unfolds to the new projection');
+  check((await page.evaluate(() => geodesic.state.t)) === 1, 'switching to another flat map ends on the new projection, fully morphed');
   await page.focus('#map'); // shortcuts are ignored while a form control has the focus
   await page.keyboard.press(']');
-  // The new map takes over once the old one has folded back into the oval.
+  // The new map takes over as soon as the turn begins.
   const stepped = await page.waitForFunction(() => geodesic.state.target !== 'robinson', { timeout: 4000 }).then(() => true, () => false);
   check(stepped, 'the bracket keys step through projections');
   await page.waitForFunction(() => !geodesic.anim, { timeout: 4000 });
@@ -238,7 +238,35 @@ try {
   check(turning.t === 1 && turning.mixing && turning.target === 'robinson', 'changing the map on a flat map turns it in place, without going back to the globe');
   await wait(800);
   check(await page.evaluate(() => geodesic.state.blend === null && geodesic.state.target === 'robinson' && geodesic.state.t === 1), 'the turn ends on the new map');
-  await page.evaluate(() => geodesic.setTarget('gnomonic'));
+  // Every flat map is made from the unrolled globe, so the plate carree and the others reshape into each other without leaving the sheet.
+  await page.evaluate(() => geodesic.setTarget('equirect'));
+  let back = 1;
+  for (let i = 0; i < 10; i++) {
+    await wait(100);
+    back = Math.min(back, await page.evaluate(() => geodesic.state.t));
+  }
+  check(back > 0.49 && (await page.evaluate(() => geodesic.state.target === 'equirect' && geodesic.state.t === 1 && !geodesic.anim)), `a flat map becomes the plate carree by reshaping back to the sheet (lowest position ${back.toFixed(2)})`);
+  await page.evaluate(() => geodesic.setTarget('mercator'));
+  let reshaped = 0;
+  for (let i = 0; i < 10; i++) {
+    await wait(100);
+    reshaped = Math.max(reshaped, await page.evaluate(() => (geodesic.state.target === 'mercator' ? geodesic.state.t : 0)));
+  }
+  check(reshaped === 1 && (await page.evaluate(() => geodesic.state.target === 'mercator' && geodesic.state.t === 1)), 'and the plate carree is reshaped into the new map, not folded back into the globe');
+  await page.evaluate(() => {
+    geodesic.setT(0.2);
+    geodesic.state.target = 'mercator';
+  });
+  const spot = () => page.evaluate(() => geodesic.engine.frame(geodesic.view).project([30, 20]));
+  const carried = await spot();
+  await page.evaluate(() => geodesic.setTarget('equirect'));
+  const moved = await spot();
+  check(Math.hypot(carried[0] - moved[0], carried[1] - moved[1]) < 1e-6 && (await page.evaluate(() => Math.abs(geodesic.state.t - 0.4) < 1e-9)), 'part-way through the unrolling, changing the map keeps the picture exactly as it is');
+  await page.evaluate(() => {
+    geodesic.state.target = 'mercator';
+    geodesic.setT(1);
+    geodesic.setTarget('gnomonic');
+  });
   let lowest = 1;
   for (let i = 0; i < 16; i++) {
     await wait(100);

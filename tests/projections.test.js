@@ -1,8 +1,7 @@
-import { geoAzimuthalEquidistantRaw } from 'd3-geo';
-import { geoAitoffRaw } from 'd3-geo-projection';
+import { geoCircle, geoPath } from 'd3-geo';
 import { describe, expect, it } from 'vitest';
 import { greatCircleAngle } from '../src/geo/geodesy.js';
-import { DISC_AT, Engine, GLOBE, OVAL_AT, PROJECTIONS, TARGETS, byId, discOvalRaw, sharesHub, stagesFor } from '../src/geo/projections.js';
+import { Engine, GLOBE, PROJECTIONS, TARGETS, UNROLLED_AT, byId, sharesHub, stagesFor } from '../src/geo/projections.js';
 
 const W = 1100;
 const H = 800;
@@ -27,11 +26,11 @@ describe('registry', () => {
     }
   });
 
-  it('flat maps go globe -> disc -> oval -> map, azimuthal ones straight from the globe', () => {
-    expect(stagesFor('mercator').map((s) => [s.a, s.b])).toEqual([[GLOBE, 'azeq'], ['azeq', 'aitoff'], ['aitoff', 'mercator']]);
-    expect(stagesFor('mercator')[0].to).toBe(DISC_AT);
-    expect(stagesFor('mercator')[1].to).toBe(OVAL_AT);
-    expect(stagesFor('aitoff').map((s) => [s.a, s.b])).toEqual([[GLOBE, 'azeq'], ['azeq', 'aitoff']]);
+  it('flat maps go globe -> unrolled -> map, azimuthal ones and the plate carree straight from the globe', () => {
+    expect(stagesFor('mercator').map((s) => [s.a, s.b])).toEqual([[GLOBE, 'equirect'], ['equirect', 'mercator']]);
+    expect(stagesFor('mercator')[0].to).toBe(UNROLLED_AT);
+    expect(stagesFor('aitoff').map((s) => [s.a, s.b])).toEqual([[GLOBE, 'equirect'], ['equirect', 'aitoff']]);
+    expect(stagesFor('equirect')).toEqual([{ a: GLOBE, b: 'equirect', from: 0, to: 1 }]);
     expect(stagesFor('gnomonic')).toEqual([{ a: GLOBE, b: 'gnomonic', from: 0, to: 1 }]);
     // Every stage list covers 0..1 without gaps.
     for (const { id } of TARGETS) {
@@ -41,8 +40,9 @@ describe('registry', () => {
       stages.slice(1).forEach((s, i) => expect(s.from).toBe(stages[i].to));
     }
     expect(sharesHub('mercator', 'robinson')).toBe(true);
+    expect(sharesHub('mercator', 'aitoff')).toBe(true);
     expect(sharesHub('mercator', 'gnomonic')).toBe(false);
-    expect(sharesHub('mercator', 'aitoff')).toBe(false);
+    expect(sharesHub('mercator', 'equirect')).toBe(false); // the plate carree is the unrolled sheet itself: its slider runs differently
   });
 });
 
@@ -82,11 +82,11 @@ describe('frames', () => {
 
 // Every visible position must round-trip: this is what keeps clicks and the cursor readout
 // honest in the middle of a morph, when no projection has an inverse of its own. At the keyframes
-// and while the globe unrolls the inverse is exact. Between the whole-world disc and a flat map
-// the blend can fold over itself near the antimeridian, so there only the picture is checked:
-// the position found must land back on the pixel that was asked about.
+// and while the globe turns into a round map the inverse is exact. While a sheet is unrolling or
+// being reshaped there is no closed form, so only the picture is checked: the position found must
+// land back on the pixel that was asked about.
 describe('picking', () => {
-  const ts = [0, 0.1, 0.2, DISC_AT, 0.4, OVAL_AT, 0.55, 0.8, 1];
+  const ts = [0, 0.1, 0.2, 0.3, 0.4, UNROLLED_AT, 0.55, 0.8, 1];
   const targets = TARGETS.map((p) => p.id);
 
   it.each(targets)('inverts %s at every stage of the morph', (target) => {
@@ -96,7 +96,8 @@ describe('picking', () => {
     for (const t of ts) {
       for (const rot of [[-12, -16, 0], [40, -50, 0], [-170, 10, 0]]) {
         const f = engine.frame(view({ t, target, rot }));
-        const midSecondStage = f.stage.a !== 'orthographic' && f.u > 1e-3 && f.u < 1 - 1e-3;
+        const inverseIsExact = f.u <= 1e-3 || f.u >= 1 - 1e-3 || (f.stage.a === GLOBE && byId[f.stage.b].azimuthal);
+        const midSecondStage = !inverseIsExact;
         for (let lon = -170; lon <= 170; lon += 30) {
           for (let lat = -70; lat <= 70; lat += 20) {
             const p = f.project([lon, lat]);
@@ -132,44 +133,72 @@ describe('picking', () => {
   });
 });
 
-// The disc opens into the oval through a family of projections. A straight blend of the two turned
-// the rim into a diamond with notches for a moment; the family stays rounded all the way.
-describe('the disc opening into the oval', () => {
-  const grid = [];
-  for (let x = -3.1; x <= 3.1; x += 0.31) for (let y = -1.55; y <= 1.55; y += 0.31) grid.push([x, y]);
-
-  it('is the Aitoff oval at one end and the azimuthal equidistant disc at the other', () => {
-    for (const [x, y] of grid) {
-      const oval = discOvalRaw(0.5)(x, y);
-      const aitoff = geoAitoffRaw(x, y);
-      expect(oval[0]).toBeCloseTo(aitoff[0], 9);
-      expect(oval[1]).toBeCloseTo(aitoff[1], 9);
-      const disc = discOvalRaw(1)(x, y);
-      const azeq = geoAzimuthalEquidistantRaw(x, y);
-      expect(disc[0]).toBeCloseTo(azeq[0], 9);
-      expect(disc[1]).toBeCloseTo(azeq[1], 9);
-    }
-  });
-
-  const edge = [];
-  for (let lat = -85; lat <= 85; lat += 5) edge.push([179.9, lat], [-179.9, lat]);
-  edge.push([0, 89.9], [0, -89.9]);
-
-  it('keeps the whole outline of the world on the screen at every step', () => {
-    for (let t = DISC_AT + 0.004; t < OVAL_AT; t += 0.01) {
-      const f = engine.frame(view({ t, rot: [0, 0, 0] }));
-      for (const point of edge) {
-        const p = f.project(point);
-        expect(p, `t=${t} ${point}`).not.toBeNull();
-        expect(p[0]).toBeGreaterThan(-2);
-        expect(p[0]).toBeLessThan(W + 2);
-        expect(p[1]).toBeGreaterThan(-2);
-        expect(p[1]).toBeLessThan(H + 2);
+// The globe becomes a flat map by being unrolled into the plate carree first. The sheet has a seam
+// behind the view, so land that crosses it must be split there rather than smeared across the map,
+// the far side may only show as far as the picture has not folded back, and the picture is framed
+// exactly while its shape and size change.
+describe('the globe unrolling', () => {
+  const pad = Math.min(W, H) * 0.05;
+  const extents = (f) => {
+    let halfWidth = 0;
+    let halfHeight = 0;
+    for (let lon = -180; lon <= 180; lon += 3) {
+      for (let lat = -90; lat <= 90; lat += 3) {
+        const p = f.project([lon, lat]);
+        if (!p) continue;
+        halfWidth = Math.max(halfWidth, Math.abs(p[0] - W / 2));
+        halfHeight = Math.max(halfHeight, Math.abs(p[1] - H / 2));
       }
     }
+    return [halfWidth, halfHeight];
+  };
+
+  it('is the plate carree at the end of the first stage, and the globe at its start', () => {
+    const unrolled = engine.frame(view({ t: UNROLLED_AT, rot: [0, 0, 0] }));
+    const plate = engine.frame(view({ t: 1, target: 'equirect', rot: [0, 0, 0] }));
+    for (const spot of [[-150, 60], [0, 0], [100, -30], [179, 10]]) {
+      const a = unrolled.project(spot);
+      const b = plate.project(spot);
+      expect(a[0]).toBeCloseTo(b[0], 6);
+      expect(a[1]).toBeCloseTo(b[1], 6);
+    }
+    const start = engine.frame(view({ t: 0, rot: [0, 0, 0] }));
+    expect(start.horizon).toBe(90);
   });
 
-  it('has no jump where the stage begins or ends: the step across a keyframe is no bigger than its neighbours', () => {
+  it('reveals the far side gradually: the horizon only ever grows, from the hemisphere to the whole world', () => {
+    let last = 0;
+    for (let t = 0; t <= UNROLLED_AT + 1e-9; t += 0.01) {
+      const { horizon } = engine.frame(view({ t, rot: [0, 0, 0] }));
+      expect(horizon, `t=${t}`).toBeGreaterThanOrEqual(last - 1e-9);
+      last = horizon;
+    }
+    expect(last).toBeGreaterThanOrEqual(179.9);
+    // The point opposite the view stays hidden until the sheet has opened all the way.
+    expect(engine.frame(view({ t: 0.1, rot: [0, 0, 0] })).project([180, 0])).toBeNull();
+    expect(engine.frame(view({ t: UNROLLED_AT - 0.01, rot: [0, 0, 0] })).project([180, 0])).not.toBeNull();
+  });
+
+  it('keeps the picture inside the window and as large as the window allows, at every step', () => {
+    for (let t = 0.02; t < UNROLLED_AT; t += 0.02) {
+      const [halfWidth, halfHeight] = extents(engine.frame(view({ t, rot: [0, 0, 0] })));
+      const fill = Math.max(halfWidth / (W / 2 - pad), halfHeight / (H / 2 - pad));
+      expect(fill, `t=${t.toFixed(2)}`).toBeGreaterThan(0.96);
+      expect(fill, `t=${t.toFixed(2)}`).toBeLessThan(1.02);
+    }
+  });
+
+  it('splits land that crosses the seam instead of smearing it across the map', () => {
+    // A round patch of the far north that straddles the antimeridian of the view (here the 180th meridian).
+    const patch = geoCircle().center([180, 75]).radius(8)();
+    for (const t of [0.2, 0.3, 0.4, 0.5]) {
+      const path = geoPath(engine.frame(view({ t, rot: [0, 0, 0] })).projection)(patch);
+      expect(path, `t=${t}`).toBeTruthy();
+      expect(path.match(/M/g), `t=${t}`).toHaveLength(2); // one piece each side of the seam
+    }
+  });
+
+  it('has no jump where the first stage ends: the step across the keyframe is no bigger than its neighbours', () => {
     const spots = [];
     for (let lon = -150; lon <= 150; lon += 30) for (let lat = -60; lat <= 60; lat += 30) spots.push([lon, lat]);
     const travel = (a, b) => {
@@ -183,10 +212,27 @@ describe('the disc opening into the oval', () => {
       }
       return worst;
     };
-    for (const at of [DISC_AT, OVAL_AT]) {
-      const across = travel(at - 0.002, at + 0.002);
-      const around = Math.max(travel(at - 0.006, at - 0.002), travel(at + 0.002, at + 0.006));
-      expect(across, `at ${at}`).toBeLessThan(around * 1.5 + 1);
+    const across = travel(UNROLLED_AT - 0.002, UNROLLED_AT + 0.002);
+    const around = Math.max(travel(UNROLLED_AT - 0.006, UNROLLED_AT - 0.002), travel(UNROLLED_AT + 0.002, UNROLLED_AT + 0.006));
+    expect(across).toBeLessThan(around * 1.5 + 1);
+  });
+
+  it('never makes a wild leap between two frames a hundredth of the way apart', () => {
+    // A picture that jumps (a map flipping, a seam moving) shows as one spot travelling far in a hundredth of t.
+    const spots = [];
+    for (let lon = -150; lon <= 150; lon += 30) for (let lat = -60; lat <= 60; lat += 30) spots.push([lon, lat]);
+    for (const target of ['mercator', 'robinson', 'mollweide']) {
+      let before = null;
+      for (let t = 0; t <= 1.0001; t += 0.01) {
+        const f = engine.frame(view({ t: Math.min(1, t), target, rot: [-12, -16, 0] }));
+        const now = spots.map((s) => f.project(s));
+        if (before) {
+          now.forEach((p, i) => {
+            if (p && before[i]) expect(Math.hypot(p[0] - before[i][0], p[1] - before[i][1]), `${target} t=${t.toFixed(2)} ${spots[i]}`).toBeLessThan(0.2 * W);
+          });
+        }
+        before = now;
+      }
     }
   });
 });
@@ -258,11 +304,11 @@ describe('progress', () => {
     }
   });
 
-  it('gives the disc opening into the oval a share that matches how much it changes', () => {
+  it('gives the unrolling a share of the progress that matches how much it changes', () => {
     const { toProgress } = engine.progress('mercator');
-    const share = toProgress(OVAL_AT) - toProgress(DISC_AT);
-    expect(share).toBeGreaterThan(0.2); // it is a fifth of t, and far more of the picture
-    expect(toProgress(1) - toProgress(OVAL_AT)).toBeLessThan(0.3); // the last half of t is a gentle finish
+    // The first half of t is the unrolling and nearly all of the picture's travel; reshaping the sheet is a gentle finish.
+    expect(toProgress(UNROLLED_AT)).toBeGreaterThan(0.6);
+    expect(toProgress(UNROLLED_AT)).toBeLessThan(0.95);
   });
 
   it('really does make equal steps look equally fast', () => {
