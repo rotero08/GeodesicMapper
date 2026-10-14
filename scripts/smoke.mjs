@@ -224,6 +224,44 @@ try {
   check(after.target === before.target && after.routes === before.routes && after.unit === 'nmi' && Math.abs(after.t - 0.8) < 1e-3, 'a shared link restores projection, morph position, routes and unit');
   await restored.close();
 
+  // The animations. Changing the map on a flat map turns one into the other in place (no trip back
+  // to the globe), a flat map and an azimuthal one fold through the globe in one motion, and Play
+  // sweeps at an even pace and rests at the ends.
+  await page.evaluate(() => {
+    geodesic.state.layers.spin = false;
+    geodesic.state.target = 'mercator';
+    geodesic.setT(1);
+    geodesic.setTarget('robinson');
+  });
+  await wait(250);
+  const turning = await page.evaluate(() => ({ t: geodesic.state.t, mixing: Boolean(geodesic.state.blend), target: geodesic.state.target }));
+  check(turning.t === 1 && turning.mixing && turning.target === 'robinson', 'changing the map on a flat map turns it in place, without going back to the globe');
+  await wait(800);
+  check(await page.evaluate(() => geodesic.state.blend === null && geodesic.state.target === 'robinson' && geodesic.state.t === 1), 'the turn ends on the new map');
+  await page.evaluate(() => geodesic.setTarget('gnomonic'));
+  let lowest = 1;
+  for (let i = 0; i < 16; i++) {
+    await wait(100);
+    lowest = Math.min(lowest, await page.evaluate(() => geodesic.state.t));
+  }
+  check(lowest < 0.05, `going to an azimuthal map folds through the globe (lowest morph position ${lowest.toFixed(2)})`);
+  await wait(500);
+  check(await page.evaluate(() => geodesic.state.target === 'gnomonic' && Math.abs(geodesic.state.t - 1) < 1e-6), 'and comes back out to the same morph position on the new map');
+  await page.evaluate(() => geodesic.setTarget('mercator'));
+  await wait(1800);
+  await page.evaluate(() => { geodesic.setT(0); geodesic.play(); });
+  const seen = [];
+  for (let i = 0; i < 18; i++) {
+    await wait(220);
+    seen.push(await page.evaluate(() => geodesic.progress));
+  }
+  await page.evaluate(() => geodesic.pause());
+  const steps = seen.slice(1).map((p, i) => p - seen[i]);
+  const middle = steps.slice(3, 10);
+  const spread = Math.max(...middle) / Math.max(1e-9, Math.min(...middle));
+  check(seen[seen.length - 1] > 0.5 && !(await page.evaluate(() => geodesic.state.playing)), 'Play morph sweeps towards the map and Pause stops it');
+  check(spread < 1.6, `Play moves at an even pace through the middle of the sweep (fastest step ${spread.toFixed(2)}x the slowest)`);
+
   // Keyboard: arrows turn the globe.
   await page.evaluate(() => geodesic.setT(0));
   await page.focus('#map');

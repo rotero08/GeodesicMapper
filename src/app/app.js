@@ -19,6 +19,19 @@ const DETAIL_ZOOM = 2.2;
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const lerp = (a, b, k) => a + (b - a) * k;
 const easeInOut = (x) => (x < 0.5 ? 4 * x * x * x : 1 - (-2 * x + 2) ** 3 / 2);
+/** Gentler than easeInOut: the picture speeds up and slows down by half as much, so the middle does not rush. */
+const easeInOutSine = (x) => 0.5 - 0.5 * Math.cos(Math.PI * x);
+const linear = (x) => x;
+/**
+ * Constant speed with a short run-up and run-down: the first and last `edge` of the time speed up
+ * and slow down, and everything between moves at one pace. (A morph should look evenly fast.)
+ */
+const cruise = (x, edge = 0.16) => {
+  const top = 1 / (1 - edge); // the speed that makes the whole path add up to 1
+  if (x < edge) return (top * x * x) / (2 * edge);
+  if (x > 1 - edge) return 1 - (top * (1 - x) * (1 - x)) / (2 * edge);
+  return top * (x - edge / 2);
+};
 const wrap180 = (deg) => ((((deg + 180) % 360) + 360) % 360) - 180;
 /** The angle equal to `target` (mod 360) that lies nearest `current`, so a turn takes the short way. */
 const nearest = (target, current) => current + wrap180(target - current);
@@ -63,8 +76,13 @@ export class App {
   }
 
   get view() {
-    const { t, target, rot, zoom, pan } = this.state;
-    return { t, target, rot, zoom, pan };
+    const { t, target, rot, zoom, pan, blend } = this.state;
+    return { t, target, rot, zoom, pan, blend };
+  }
+
+  /** The morph position by visual progress (0..1): equal steps look equally fast. */
+  get progress() {
+    return this.engine.width ? this.engine.progress(this.state.target).toProgress(this.state.t) : this.state.t;
   }
 
   frame() {
@@ -158,13 +176,19 @@ export class App {
 
   cancelAnimation() {
     const wasPlaying = this.state.playing;
+    clearTimeout(this.holdTimer);
     this.anim = null;
     this.state.playing = false;
+    // A map that was part-way into another stays where it was heading.
+    if (this.state.blend) {
+      this.state.blend = null;
+      this.invalidate();
+    }
     if (wasPlaying) this.emit('play');
   }
 
   /** Runs `update(eased 0..1)` over `duration` ms; a new animation replaces the running one. */
-  #animate(duration, update, done) {
+  #animate(duration, update, done, ease = easeInOut) {
     const token = {};
     this.anim = token;
     if (duration <= 0 || prefersReducedMotion()) {
@@ -178,7 +202,7 @@ export class App {
     const step = (now) => {
       if (this.anim !== token) return;
       const k = clamp((now - start) / duration, 0, 1);
-      update(easeInOut(k));
+      update(ease(k));
       this.changed('view');
       if (k < 1) requestAnimationFrame(step);
       else {
@@ -189,11 +213,18 @@ export class App {
     requestAnimationFrame(step);
   }
 
-  /** Animates the morph position from its current value to `to`. */
+  /**
+   * Animates the morph position from its current value to `to`. The position is moved by visual
+   * progress, not by `t` itself, so the picture keeps an even pace: the disc opening into the oval
+   * gets the time it needs instead of flashing past.
+   */
   #tween(to, duration, done) {
     const s = this.state;
-    const from = s.t;
-    this.#animate(Math.abs(to - from) < 1e-3 ? 0 : duration, (k) => (s.t = lerp(from, to, k)), done);
+    const profile = this.engine.progress(s.target);
+    const from = profile.toProgress(s.t);
+    const goal = profile.toProgress(to);
+    const span = Math.abs(goal - from);
+    this.#animate(span < 1e-3 ? 0 : duration(span), (k) => (s.t = k >= 1 ? to : profile.toT(lerp(from, goal, k))), done, cruise);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -206,29 +237,79 @@ export class App {
     this.changed('view');
   }
 
+  /** Sets the morph by visual progress, which is what the slider does. */
+  setProgress(value) {
+    const p = clamp(value, 0, 1);
+    this.setT(this.engine.width ? this.engine.progress(this.state.target).toT(p) : p);
+  }
+
   setTarget(id) {
     const s = this.state;
     if (id === s.target || id === GLOBE || !byId[id]) return;
     this.cancelAnimation();
+    const old = s.target;
+    const resting = s.t;
     const apply = () => {
       s.target = id;
       this.changed('projection');
     };
-    const old = s.target;
-    const resting = s.t;
     if (resting < 0.002) return apply();
-    // Flat maps are reached through the whole-world oval, so two maps fold into it and unfold
-    // again; azimuthal maps share the globe's geometry and go back through the globe itself.
+    // Up to the whole-world oval the picture does not depend on the target at all.
     const hub = sharesHub(old, id);
     if (hub && resting <= OVAL_AT) return apply();
-    const waypoint = hub ? OVAL_AT : 0;
-    this.#tween(waypoint, 380, () => {
-      apply();
-      this.#tween(resting, 520);
-    });
+    // Two flat maps, or two azimuthal ones, turn straight into each other.
+    if (hub || (byId[old].azimuthal && byId[id].azimuthal)) return this.#turnInto(old, id);
+    // Otherwise fold the old map back into the globe and unfold the new one from it, in one motion.
+    this.#foldInto(old, id, resting);
   }
 
-  /** Loops globe -> map -> globe until paused. */
+  /** One map turning directly into another, over a single smooth motion. */
+  #turnInto(from, id) {
+    const s = this.state;
+    s.target = id;
+    s.blend = { from, k: 0 };
+    this.emit('projection');
+    this.#animate(
+      700,
+      (k) => {
+        s.blend = k >= 1 ? null : { from, k };
+      },
+      () => this.changed('projection'),
+      easeInOutSine,
+    );
+  }
+
+  /**
+   * Back to the globe and out to the new map without stopping: the position dips to the globe
+   * and rises again along one curve that is slow at the start, at the globe and at the end.
+   */
+  #foldInto(old, id, resting) {
+    const s = this.state;
+    const before = this.engine.progress(old);
+    const after = this.engine.progress(id);
+    const down = before.toProgress(resting);
+    const up = after.toProgress(resting);
+    let switched = false;
+    this.#animate(
+      1150,
+      (k) => {
+        const dip = Math.cos(Math.PI * k) ** 2;
+        if (k < 0.5) s.t = before.toT(down * dip);
+        else {
+          if (!switched) {
+            switched = true;
+            s.target = id;
+            this.emit('projection');
+          }
+          s.t = k >= 1 ? resting : after.toT(up * dip);
+        }
+      },
+      () => this.changed('projection'),
+      linear,
+    );
+  }
+
+  /** Loops globe -> map -> globe until paused, resting a moment at each end. */
   play() {
     const s = this.state;
     this.cancelAnimation();
@@ -243,9 +324,14 @@ export class App {
     const swing = () => {
       if (!s.playing) return;
       const goal = s.t < 0.5 ? 1 : 0;
-      this.#tween(goal, 600 + 2200 * Math.abs(goal - s.t), () => {
-        if (s.playing) swing();
-      });
+      this.#tween(
+        goal,
+        (span) => 900 + 2300 * span,
+        () => {
+          if (!s.playing) return;
+          this.holdTimer = setTimeout(swing, 650);
+        },
+      );
     };
     swing();
   }

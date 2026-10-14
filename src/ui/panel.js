@@ -38,7 +38,7 @@ function setupProjection(app) {
   select.addEventListener('change', () => app.setTarget(select.value));
 
   const slider = $('#t');
-  slider.addEventListener('input', () => app.setT(Number(slider.value)));
+  slider.addEventListener('input', () => app.setProgress(Number(slider.value)));
 
   const play = $('#play');
   play.addEventListener('click', () => app.togglePlay());
@@ -52,9 +52,10 @@ function setupProjection(app) {
     $('#projblurb').textContent = p.blurb;
   };
   const renderSlider = () => {
-    slider.value = String(app.state.t);
-    slider.style.setProperty('--fill', `${app.state.t * 100}%`);
-    slider.setAttribute('aria-valuetext', app.state.t < 0.01 ? 'Globe' : app.state.t > 0.99 ? byId[app.state.target].name : `${Math.round(app.state.t * 100)} percent towards ${byId[app.state.target].name}`);
+    const progress = app.progress;
+    slider.value = String(progress);
+    slider.style.setProperty('--fill', `${progress * 100}%`);
+    slider.setAttribute('aria-valuetext', app.state.t < 0.01 ? 'Globe' : app.state.t > 0.99 ? byId[app.state.target].name : `${Math.round(progress * 100)} percent towards ${byId[app.state.target].name}`);
   };
   const renderPlay = () => {
     const playing = app.state.playing;
@@ -63,6 +64,7 @@ function setupProjection(app) {
   };
 
   app.on('projection', renderProjection);
+  app.on('projection', renderSlider); // the same position is a different amount of progress on another map
   app.on('view', renderSlider);
   app.on('play', renderPlay);
   renderProjection();

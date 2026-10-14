@@ -12,6 +12,16 @@
 // blended point by point. While the globe is unrolling, a horizon limits the picture to the part
 // of the sphere that has not yet folded back on itself, which is what removes the "ghost" far
 // hemisphere.
+//
+// The disc opens into the oval through a family of projections rather than a straight blend of the
+// two (a straight blend turns the rim into a diamond with notches for a moment): Aitoff is the
+// azimuthal equidistant map with longitudes halved and x doubled, so letting that halving go
+// from 1 to 1/2 changes the disc into the oval through smooth, rounded shapes all the way.
+//
+// One map can also turn directly into another (a blend of the two final maps), so changing the
+// projection on a flat map does not have to fold the world up and unfold it again. Finally the
+// pace of a morph is measured: `Engine.progress` tells how far along the way the picture has
+// travelled on screen, which is what lets an animation move at an even speed.
 
 import {
   geoAzimuthalEqualArea,
@@ -189,9 +199,54 @@ const safe = (raw) => (x, y) => {
 // instead of shooting off to infinity (which draws tall rectangular tabs mid-morph).
 const MERCATOR_LIMIT = 85.0511 * RAD;
 const blendRaw = (P) =>
-  P.id === 'mercator'
+  P.mixRaw ??
+  (P.id === 'mercator'
     ? safe((x, y) => geoMercatorRaw(x, Math.max(-MERCATOR_LIMIT, Math.min(MERCATOR_LIMIT, y))))
-    : safe(P.raw);
+    : safe(P.raw));
+
+// ---- the disc-to-oval family
+
+/** s = 1 is the azimuthal equidistant disc; s = 1/2 is the Aitoff oval (see the header). */
+export const discOvalRaw = (s) => (x, y) => {
+  const p = geoAzimuthalEquidistantRaw(s * x, y);
+  return [p[0] / s, p[1]];
+};
+
+/** Half the height of the world's outline in that family: where the cut edge climbs highest. */
+function discOvalHalfHeight(s) {
+  const raw = discOvalRaw(s);
+  let top = 0;
+  for (let i = 1; i <= 90; i++) {
+    const y = Math.abs(raw(Math.PI, (Math.PI / 2) * (i / 90))[1]);
+    if (Number.isFinite(y)) top = Math.max(top, y);
+  }
+  return Math.max(top, Math.PI / 2);
+}
+
+// ---- one map turning into another
+
+const clipOf = (P) => P.clip ?? 180 - 1e-3;
+
+/** A map `k` of the way from `from` to `to`: its projection, framing and crop are blends of theirs. */
+function mixOf(from, to, k) {
+  const rawFrom = blendRaw(from);
+  const rawTo = blendRaw(to);
+  const mixed = {
+    id: 'mix',
+    name: to.name,
+    azimuthal: to.azimuthal,
+    flat: lerp(from.flat, to.flat, k),
+    mixRaw: (x, y) => {
+      const a = rawFrom(x, y);
+      const b = rawTo(x, y);
+      return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k];
+    },
+  };
+  mixed.raw = mixed.mixRaw;
+  if (to.azimuthal) mixed.clip = lerp(clipOf(from), clipOf(to), k);
+  else if (from.fitLat || to.fitLat) mixed.fitLat = lerp(from.fitLat ?? 90, to.fitLat ?? 90, k);
+  return mixed;
+}
 
 /** Distance from the centre, in raw units, of the point `c` radians away along a meridian. */
 const radialOf = (raw, c) => raw(0, c)[1];
@@ -374,6 +429,7 @@ export class Engine {
     this.height = 0;
     this.fits = {};
     this._memo = null;
+    this._progress = null;
   }
 
   resize(width, height) {
@@ -381,18 +437,93 @@ export class Engine {
     this.height = Math.max(20, height);
     this.fits = Object.fromEntries(REGISTRY.map((P) => [P.id, computeFit(P, this.width, this.height)]));
     this._memo = null;
+    this._progress = null;
   }
 
   /**
-   * The frame for a view: { t, target, rot, zoom, pan }. `t` runs 0 (globe) to 1 (target map),
-   * `rot` is d3's [lambda, phi, gamma], `pan` is a screen offset used on flat maps.
+   * The frame for a view: { t, target, rot, zoom, pan, blend }. `t` runs 0 (globe) to 1 (target
+   * map), `rot` is d3's [lambda, phi, gamma], `pan` is a screen offset used on flat maps, and
+   * `blend` ({ from, k }) says that the target is still `k` of the way from the map `from`.
    */
   frame(view) {
-    const key = `${view.t}|${view.target}|${view.rot}|${view.zoom}|${view.pan}|${this.width}x${this.height}`;
+    const mix = view.blend ? `${view.blend.from}:${view.blend.k}` : '';
+    const key = `${view.t}|${view.target}|${view.rot}|${view.zoom}|${view.pan}|${mix}|${this.width}x${this.height}`;
     if (this._memo?.key === key) return this._memo.frame;
     const frame = this._build(view);
     this._memo = { key, frame };
     return frame;
+  }
+
+  /**
+   * How far along the morph to `target` the picture has travelled on screen. Equal steps of
+   * progress look equally fast, which `t` does not give: the disc opening into the oval covers
+   * a small slice of `t` and the most change. Returns { toProgress(t), toT(progress) }, both 0..1.
+   */
+  progress(target) {
+    const key = `${target}|${this.width}x${this.height}`;
+    if (this._progress?.key === key) return this._progress.value;
+
+    const steps = 96;
+    const view = { target, rot: [-10, -15, 0], zoom: 1, pan: [0, 0], blend: null };
+    const spots = [];
+    for (let lat = -60; lat <= 60; lat += 30) for (let i = 0; i < 12; i++) spots.push([-175 + 30 * i, lat]);
+    spots.push([0, 85], [0, -85]);
+    const where = (t) => {
+      const frame = this._build({ ...view, t });
+      return spots.map((spot) => frame.project(spot));
+    };
+
+    const raw = [];
+    let before = where(0);
+    for (let i = 1; i <= steps; i++) {
+      const after = where(i / steps);
+      let total = 0;
+      let counted = 0;
+      for (let j = 0; j < spots.length; j++) {
+        if (!before[j] || !after[j]) continue;
+        total += Math.hypot(after[j][0] - before[j][0], after[j][1] - before[j][1]);
+        counted++;
+      }
+      raw.push(counted ? total / counted : 0);
+      before = after;
+    }
+    // Smooth the measurement, and never let the pace fall to zero (a still picture would take no time at all).
+    const mean = raw.reduce((a, b) => a + b, 0) / steps || 1;
+    const speeds = raw.map((_, i) => {
+      let sum = 0;
+      let n = 0;
+      for (let k = Math.max(0, i - 3); k <= Math.min(steps - 1, i + 3); k++) {
+        sum += raw[k];
+        n++;
+      }
+      return Math.max(sum / n, 0.25 * mean);
+    });
+    const cumulative = [0];
+    for (const speed of speeds) cumulative.push(cumulative[cumulative.length - 1] + speed);
+    const total = cumulative[steps];
+    for (let i = 0; i <= steps; i++) cumulative[i] /= total;
+
+    const value = {
+      toProgress(t) {
+        const x = clamp01(t) * steps;
+        const i = Math.min(steps - 1, Math.floor(x));
+        return cumulative[i] + (cumulative[i + 1] - cumulative[i]) * (x - i);
+      },
+      toT(p) {
+        const goal = clamp01(p);
+        let lo = 0;
+        let hi = steps;
+        while (hi - lo > 1) {
+          const mid = (lo + hi) >> 1;
+          if (cumulative[mid] <= goal) lo = mid;
+          else hi = mid;
+        }
+        const span = cumulative[lo + 1] - cumulative[lo];
+        return clamp01((lo + (span > 0 ? (goal - cumulative[lo]) / span : 0)) / steps);
+      },
+    };
+    this._progress = { key, value };
+    return value;
   }
 
   _real(P, scale, translate, rotate, extent) {
@@ -402,25 +533,46 @@ export class Engine {
     return projection;
   }
 
-  _build({ t, target, rot, zoom, pan }) {
+  _build({ t, target, rot, zoom, pan, blend = null }) {
     const { width, height } = this;
     const stages = stagesFor(target);
     const stage = stages.find((s) => t <= s.to) ?? stages[stages.length - 1];
     const u = clamp01((t - stage.from) / (stage.to - stage.from));
-    const A = byId[stage.a];
-    const B = byId[stage.b];
-    const fa = this.fits[A.id];
-    const fb = this.fits[B.id];
+
+    // While one map is turning into another, the target is a blend of the two.
+    const mixing = blend && blend.k < 1 && blend.from !== target ? blend : null;
+    const resolve = (id) => (mixing && id === target ? mixOf(byId[mixing.from], byId[target], mixing.k) : byId[id]);
+    const A = resolve(stage.a);
+    const B = resolve(stage.b);
+    const fitOf = (P) =>
+      P.id === 'mix'
+        ? {
+            scale: lerp(this.fits[mixing.from].scale, this.fits[target].scale, mixing.k),
+            translate: [0, 1].map((i) => lerp(this.fits[mixing.from].translate[i], this.fits[target].translate[i], mixing.k)),
+          }
+        : this.fits[P.id];
+    const fa = fitOf(A);
+    const fb = fitOf(B);
+    const opening = A.id === DISC && B.id === OVAL; // the disc opening into the oval
 
     const flat = lerp(A.flat, B.flat, u);
     // Tilt is damped as the map flattens, and the map can be dragged vertically instead.
     const mapness = smoothstep((flat - 0.35) / 0.45);
     const rotate = [rot[0], rot[1] * (1 - flat), rot[2]];
-    const scale = lerp(fa.scale, fb.scale, u) * zoom;
-    const translate = [
-      lerp(fa.translate[0], fb.translate[0], u) + pan[0] * mapness,
-      lerp(fa.translate[1], fb.translate[1], u) + pan[1] * mapness,
-    ];
+    let scale = lerp(fa.scale, fb.scale, u);
+    let translate = [lerp(fa.translate[0], fb.translate[0], u), lerp(fa.translate[1], fb.translate[1], u)];
+    let family = null;
+    if (opening && u > EPS && u < 1 - EPS) {
+      // The outline changes height as it opens: frame it exactly, and correct by how far the
+      // keyframes' own framing departs from the exact one so the two meet without a jump.
+      family = lerp(1, 0.5, u);
+      const pad = Math.min(width, height) * 0.05;
+      const exact = (s) => Math.min((width - 2 * pad) / (2 * Math.PI), (height - 2 * pad) / (2 * discOvalHalfHeight(s)));
+      scale = exact(family) * lerp(fa.scale / exact(1), fb.scale / exact(0.5), u);
+      translate = [width / 2, height / 2];
+    }
+    scale *= zoom;
+    translate = [translate[0] + pan[0] * mapness, translate[1] + pan[1] * mapness];
     const extent = [[-MARGIN, -MARGIN], [width + MARGIN, height + MARGIN]];
     const centerLon = -rotate[0];
 
@@ -428,7 +580,8 @@ export class Engine {
     let guess;
     let radial = null;
     let horizon = 180;
-    if (u <= EPS || u >= 1 - EPS) {
+    const real = (P) => P.id !== 'mix';
+    if ((u <= EPS && real(A)) || (u >= 1 - EPS && real(B))) {
       const P = u <= EPS ? A : B;
       projection = this._real(P, scale, translate, rotate, extent);
       if (P.fitLat) projection.clipExtent(bandExtent(projection, P.fitLat, centerLon, width, height, 1));
@@ -437,11 +590,15 @@ export class Engine {
     } else {
       const rawA = blendRaw(A);
       const rawB = blendRaw(B);
-      projection = geoProjectionMutator((k) => (x, y) => {
-        const a = rawA(x, y);
-        const b = rawB(x, y);
-        return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k];
-      })(u);
+      projection = geoProjectionMutator((k) =>
+        family
+          ? discOvalRaw(k)
+          : (x, y) => {
+              const a = rawA(x, y);
+              const b = rawB(x, y);
+              return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k];
+            },
+      )(family ?? u);
       projection.scale(scale).translate(translate).rotate(rotate);
       if (A.id === GLOBE) {
         horizon = horizonFor(A, B, u);
@@ -453,8 +610,9 @@ export class Engine {
       } else {
         projection.clipExtent(extent);
       }
-      // Blends have no inverse of their own; the nearer keyframe provides a starting guess.
-      guess = this._real(u < 0.5 ? A : B, scale, translate, rotate, extent);
+      // Blends have no inverse of their own; the nearer real map provides a starting guess.
+      const near = u < 0.5 ? A : B;
+      guess = this._real(real(near) ? near : byId[target], scale, translate, rotate, extent);
       if (A.id === GLOBE) {
         radial = {
           profile: (c) => lerp(radialOf(rawA, c), radialOf(rawB, c), u),

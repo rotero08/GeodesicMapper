@@ -1,6 +1,8 @@
+import { geoAzimuthalEquidistantRaw } from 'd3-geo';
+import { geoAitoffRaw } from 'd3-geo-projection';
 import { describe, expect, it } from 'vitest';
 import { greatCircleAngle } from '../src/geo/geodesy.js';
-import { DISC_AT, Engine, GLOBE, OVAL_AT, PROJECTIONS, TARGETS, byId, sharesHub, stagesFor } from '../src/geo/projections.js';
+import { DISC_AT, Engine, GLOBE, OVAL_AT, PROJECTIONS, TARGETS, byId, discOvalRaw, sharesHub, stagesFor } from '../src/geo/projections.js';
 
 const W = 1100;
 const H = 800;
@@ -127,5 +129,166 @@ describe('picking', () => {
     expect(f.invert([2, 2])).toBeNull();
     const g = engine.frame(view({ t: 1, target: 'mollweide' }));
     expect(g.invert([3, 3])).toBeNull();
+  });
+});
+
+// The disc opens into the oval through a family of projections. A straight blend of the two turned
+// the rim into a diamond with notches for a moment; the family stays rounded all the way.
+describe('the disc opening into the oval', () => {
+  const grid = [];
+  for (let x = -3.1; x <= 3.1; x += 0.31) for (let y = -1.55; y <= 1.55; y += 0.31) grid.push([x, y]);
+
+  it('is the Aitoff oval at one end and the azimuthal equidistant disc at the other', () => {
+    for (const [x, y] of grid) {
+      const oval = discOvalRaw(0.5)(x, y);
+      const aitoff = geoAitoffRaw(x, y);
+      expect(oval[0]).toBeCloseTo(aitoff[0], 9);
+      expect(oval[1]).toBeCloseTo(aitoff[1], 9);
+      const disc = discOvalRaw(1)(x, y);
+      const azeq = geoAzimuthalEquidistantRaw(x, y);
+      expect(disc[0]).toBeCloseTo(azeq[0], 9);
+      expect(disc[1]).toBeCloseTo(azeq[1], 9);
+    }
+  });
+
+  const edge = [];
+  for (let lat = -85; lat <= 85; lat += 5) edge.push([179.9, lat], [-179.9, lat]);
+  edge.push([0, 89.9], [0, -89.9]);
+
+  it('keeps the whole outline of the world on the screen at every step', () => {
+    for (let t = DISC_AT + 0.004; t < OVAL_AT; t += 0.01) {
+      const f = engine.frame(view({ t, rot: [0, 0, 0] }));
+      for (const point of edge) {
+        const p = f.project(point);
+        expect(p, `t=${t} ${point}`).not.toBeNull();
+        expect(p[0]).toBeGreaterThan(-2);
+        expect(p[0]).toBeLessThan(W + 2);
+        expect(p[1]).toBeGreaterThan(-2);
+        expect(p[1]).toBeLessThan(H + 2);
+      }
+    }
+  });
+
+  it('has no jump where the stage begins or ends: the step across a keyframe is no bigger than its neighbours', () => {
+    const spots = [];
+    for (let lon = -150; lon <= 150; lon += 30) for (let lat = -60; lat <= 60; lat += 30) spots.push([lon, lat]);
+    const travel = (a, b) => {
+      const fa = engine.frame(view({ t: a, rot: [0, 0, 0] }));
+      const fb = engine.frame(view({ t: b, rot: [0, 0, 0] }));
+      let worst = 0;
+      for (const spot of spots) {
+        const p = fa.project(spot);
+        const q = fb.project(spot);
+        if (p && q) worst = Math.max(worst, Math.hypot(p[0] - q[0], p[1] - q[1]));
+      }
+      return worst;
+    };
+    for (const at of [DISC_AT, OVAL_AT]) {
+      const across = travel(at - 0.002, at + 0.002);
+      const around = Math.max(travel(at - 0.006, at - 0.002), travel(at + 0.002, at + 0.006));
+      expect(across, `at ${at}`).toBeLessThan(around * 1.5 + 1);
+    }
+  });
+});
+
+describe('one map turning into another', () => {
+  const spots = [[-60, 20], [0, 0], [40, 50], [120, -30]];
+  const at = (f) => spots.map((s) => f.project(s));
+
+  it('starts as the old map and ends as the new one', () => {
+    const start = engine.frame(view({ t: 1, target: 'robinson', rot: [0, 0, 0], blend: { from: 'mollweide', k: 0 } }));
+    const old = engine.frame(view({ t: 1, target: 'mollweide', rot: [0, 0, 0] }));
+    const end = engine.frame(view({ t: 1, target: 'robinson', rot: [0, 0, 0], blend: { from: 'mollweide', k: 1 } }));
+    const robinson = engine.frame(view({ t: 1, target: 'robinson', rot: [0, 0, 0] }));
+    at(start).forEach((p, i) => {
+      expect(p[0]).toBeCloseTo(at(old)[i][0], 1);
+      expect(p[1]).toBeCloseTo(at(old)[i][1], 1);
+    });
+    at(end).forEach((p, i) => {
+      expect(p[0]).toBeCloseTo(at(robinson)[i][0], 6);
+      expect(p[1]).toBeCloseTo(at(robinson)[i][1], 6);
+    });
+  });
+
+  it('moves steadily in between, never jumping back', () => {
+    let last = null;
+    let total = 0;
+    for (let k = 0; k <= 1; k += 0.1) {
+      const f = engine.frame(view({ t: 1, target: 'equalearth', rot: [0, 0, 0], blend: { from: 'sinusoidal', k } }));
+      const here = at(f);
+      if (last) total += Math.hypot(here[3][0] - last[3][0], here[3][1] - last[3][1]);
+      last = here;
+    }
+    const direct = Math.hypot(
+      at(engine.frame(view({ t: 1, target: 'equalearth', rot: [0, 0, 0] })))[3][0] - at(engine.frame(view({ t: 1, target: 'sinusoidal', rot: [0, 0, 0] })))[3][0],
+      at(engine.frame(view({ t: 1, target: 'equalearth', rot: [0, 0, 0] })))[3][1] - at(engine.frame(view({ t: 1, target: 'sinusoidal', rot: [0, 0, 0] })))[3][1],
+    );
+    expect(total).toBeLessThan(direct * 1.2 + 1); // a point travels about the straight way, not far and back
+  });
+
+  it('works between azimuthal maps too, clip angle included', () => {
+    const half = engine.frame(view({ t: 1, target: 'azeq', blend: { from: 'stereographic', k: 0.5 } }));
+    expect(half.horizon).toBeCloseTo((142 + 180) / 2, 2);
+    expect(half.project([-168, -16])).toBeNull(); // the point opposite the centre (12, 16) is beyond any horizon
+    expect(half.project([12, 16])).not.toBeNull();
+  });
+
+  it('picking still works while it is turning', () => {
+    const f = engine.frame(view({ t: 1, target: 'robinson', blend: { from: 'mercator', k: 0.5 } }));
+    const p = f.project([30, 20]);
+    const back = f.invert(p);
+    expect(back).not.toBeNull();
+    expect(greatCircleAngle(back, [30, 20])).toBeLessThan(0.001);
+  });
+});
+
+// Equal steps of `t` do not look equally fast: opening the disc is a small slice of t and the
+// most change. `progress` measures the picture's own travel so animations can move evenly.
+describe('progress', () => {
+  it.each(['mercator', 'robinson', 'stereographic', 'gnomonic', 'aitoff', 'equirect'])('is a smooth 0..1 map of the morph to %s', (target) => {
+    const { toProgress, toT } = engine.progress(target);
+    expect(toProgress(0)).toBe(0);
+    expect(toProgress(1)).toBeCloseTo(1, 9);
+    let last = -1;
+    for (let t = 0; t <= 1.0001; t += 0.02) {
+      const p = toProgress(Math.min(1, t));
+      expect(p).toBeGreaterThanOrEqual(last);
+      last = p;
+      expect(toT(p)).toBeCloseTo(Math.min(1, t), 2);
+    }
+  });
+
+  it('gives the disc opening into the oval a share that matches how much it changes', () => {
+    const { toProgress } = engine.progress('mercator');
+    const share = toProgress(OVAL_AT) - toProgress(DISC_AT);
+    expect(share).toBeGreaterThan(0.2); // it is a fifth of t, and far more of the picture
+    expect(toProgress(1) - toProgress(OVAL_AT)).toBeLessThan(0.3); // the last half of t is a gentle finish
+  });
+
+  it('really does make equal steps look equally fast', () => {
+    const { toT } = engine.progress('mercator');
+    const spots = [];
+    for (let lon = -150; lon <= 150; lon += 30) for (let lat = -60; lat <= 60; lat += 30) spots.push([lon, lat]);
+    const where = (t) => spots.map((s) => engine.frame(view({ t, rot: [-10, -15, 0] })).project(s));
+    const steps = 24;
+    const travelled = [];
+    let before = where(0);
+    for (let i = 1; i <= steps; i++) {
+      const after = where(toT(i / steps));
+      let total = 0;
+      let n = 0;
+      before.forEach((p, j) => {
+        if (p && after[j]) {
+          total += Math.hypot(after[j][0] - p[0], after[j][1] - p[1]);
+          n++;
+        }
+      });
+      travelled.push(n ? total / n : 0);
+      before = after;
+    }
+    const mean = travelled.reduce((a, b) => a + b, 0) / steps;
+    const worst = Math.max(...travelled);
+    // With equal steps of t the busiest step is many times the mean; with equal progress it stays close.
+    expect(worst / mean).toBeLessThan(2.1);
   });
 });

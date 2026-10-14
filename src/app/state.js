@@ -21,6 +21,7 @@ export function createState() {
   return {
     target: 'mercator', // the map the globe morphs into
     t: 0, // 0 = globe, 1 = the map
+    blend: null, // { from, k } while one map is turning into another; never saved
     rot: [...HOME.rot], // d3 rotation: [-centre longitude, -centre latitude, roll]
     zoom: HOME.zoom,
     pan: [...HOME.pan], // screen offset, used on flat maps

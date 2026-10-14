@@ -48,6 +48,20 @@ which is what stops the far side of the Earth from ghosting through the near sid
 the globe's geometry, so they are reached directly. Clicks and the cursor readout stay correct during the
 morph: blends that unroll the globe are inverted exactly, and the rest with Newton's method.
 
+Three details keep the motion natural:
+
+* **The disc opens through a family, not a blend.** Aitoff is the azimuthal equidistant map with the
+  longitudes halved and x doubled, so the morph lets that halving go from 1 to ½ and the world's outline
+  stays rounded all the way. (A straight blend of the two turned the rim into a diamond with notches.)
+* **Even pace.** Equal steps of the slider do not look equally fast: opening the disc is a fifth of the
+  slider and most of the change. The engine measures how far the picture travels on screen
+  (`Engine.progress`), and both the slider and *Play morph* move by that, with a short run-up and
+  run-down, so no stage rushes past. *Play morph* rests a moment at each end.
+* **Maps turn into each other.** Changing the projection on a flat map blends the old map into the new
+  one in place (about 0.7 s) instead of folding the world back to the globe. Going between a flat map
+  and an azimuthal one still passes through the globe, but in one motion that is slow at the start, at the
+  globe and at the end.
+
 ## Controls
 
 | | Mouse and trackpad | Touch | Keyboard |
